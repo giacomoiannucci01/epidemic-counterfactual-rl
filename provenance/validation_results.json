@@ -1,0 +1,190 @@
+{
+  "date": "2026-11-18",
+  "python": "3.12.5",
+  "dependencies": {
+    "numpy": "2.5.3",
+    "scipy": "1.18.1",
+    "pandas": "2.3.3",
+    "matplotlib": "3.11.2",
+    "torch": "2.14.0",
+    "Pillow": "12.3.0"
+  },
+  "full_research_training_executed": false,
+  "historical": {
+    "england": {
+      "country": "england",
+      "parameters_fitted_during_run": false,
+      "particles": 5000,
+      "predictive_draws": 20000,
+      "seed": 20261114,
+      "forecast_before_current_observation_assimilation": true,
+      "initial_fit_dates": [
+        "2020-10-12",
+        "2020-11-01"
+      ],
+      "updated_fit_dates": [
+        "2020-12-01",
+        "2021-01-31"
+      ],
+      "updated_parameters_apply_from": "2020-12-06",
+      "historical_fit_profile": "Exact previously requested fixed England historical-fit model, distinct from V18 RL late-regime profile",
+      "oracle_available": false,
+      "checks": [
+        {
+          "target_date": "2020-11-02",
+          "forecast_observation_argument": false,
+          "identical_pre_observation_inputs_produce_identical_predictions": true
+        },
+        {
+          "target_date": "2020-12-06",
+          "forecast_observation_argument": false,
+          "identical_pre_observation_inputs_produce_identical_predictions": true
+        }
+      ],
+      "png_matches_previous_figure_byte_for_byte": true
+    },
+    "belgium": {
+      "country": "belgium",
+      "parameters_fitted_during_run": false,
+      "particles": 5000,
+      "predictive_draws": 20000,
+      "seed": 2026,
+      "forecast_before_current_observation_assimilation": true,
+      "initial_fit_dates": [
+        "2020-09-01",
+        "2020-09-21"
+      ],
+      "updated_fit_dates": [
+        "2020-11-03",
+        "2020-11-30"
+      ],
+      "updated_parameters_apply_from": "2020-12-01",
+      "oracle_available": false,
+      "historical_q_not_forced_from_future_fit": true
+    }
+  },
+  "end_to_end_smoke": {
+    "england": {
+      "config": {
+        "profile": "smoke",
+        "seed": 20261118,
+        "deployment_particles": 32,
+        "planning_particles": 16,
+        "train_episodes": 2,
+        "outer_iterations": 1,
+        "ensemble_size": 1,
+        "hidden_units": 48,
+        "mc_candidates": 2,
+        "mc_rollouts": 1,
+        "batch_size": 8,
+        "learning_rate": 0.0003,
+        "target_sync_updates": 8,
+        "alpha": 0.5,
+        "lambda0": null,
+        "eta0": 0.4,
+        "oracle": true,
+        "planning_trace_limit": 3000
+      },
+      "pf_counters": {
+        "planning": {
+          "pf_updates": 1844,
+          "oracle_resets": 323
+        },
+        "deployment": {
+          "pf_updates": 304,
+          "oracle_resets": 71
+        },
+        "historical": {
+          "pf_updates": 0,
+          "oracle_resets": 0
+        },
+        "bootstrap": {
+          "pf_updates": 0,
+          "oracle_resets": 0
+        }
+      },
+      "network_updates": 7,
+      "state_feature_count": 83,
+      "uses_current_simulated_truth_fallback": true,
+      "uses_future_deployment_truth_in_planning": false,
+      "uses_real_future_observations_in_counterfactual_filters": false,
+      "new_model_parameter_fit": false,
+      "status": "smoke validation, not a scientific production result",
+      "same_seed_matches_previous_run": {
+        "government_daily.csv": true,
+        "iter_01/rl_daily.csv": true,
+        "iter_01/belief_states.csv": true,
+        "iter_01/decisions_and_policy_state.csv": true
+      }
+    },
+    "belgium": {
+      "config": {
+        "profile": "smoke",
+        "seed": 20261118,
+        "deployment_particles": 32,
+        "planning_particles": 16,
+        "train_episodes": 2,
+        "outer_iterations": 1,
+        "ensemble_size": 1,
+        "hidden_units": 48,
+        "mc_candidates": 2,
+        "mc_rollouts": 1,
+        "batch_size": 8,
+        "learning_rate": 0.0003,
+        "target_sync_updates": 8,
+        "alpha": 0.5,
+        "lambda0": null,
+        "eta0": 0.4,
+        "oracle": true,
+        "planning_trace_limit": 3000
+      },
+      "pf_counters": {
+        "planning": {
+          "pf_updates": 1844,
+          "oracle_resets": 959
+        },
+        "deployment": {
+          "pf_updates": 304,
+          "oracle_resets": 148
+        },
+        "historical": {
+          "pf_updates": 0,
+          "oracle_resets": 0
+        },
+        "bootstrap": {
+          "pf_updates": 20,
+          "oracle_resets": 0
+        }
+      },
+      "network_updates": 7,
+      "state_feature_count": 83,
+      "uses_current_simulated_truth_fallback": true,
+      "uses_future_deployment_truth_in_planning": false,
+      "uses_real_future_observations_in_counterfactual_filters": false,
+      "new_model_parameter_fit": false,
+      "status": "smoke validation, not a scientific production result",
+      "same_seed_matches_previous_run": {
+        "government_daily.csv": true,
+        "iter_01/rl_daily.csv": true,
+        "iter_01/belief_states.csv": true,
+        "iter_01/decisions_and_policy_state.csv": true
+      }
+    }
+  },
+  "unit_tests": {
+    "command": "python -m unittest discover -s tests -v",
+    "passed": 11,
+    "failed": 0
+  },
+  "wheel_installation": {
+    "build_succeeded": true,
+    "installed_in_separate_environment": true,
+    "tested_outside_source_checkout": true,
+    "country_checks": [
+      "england",
+      "belgium"
+    ],
+    "all_packaged_hashes_match": true,
+    "small_belgium_historical_run_passed": true
+  }
+}

@@ -1,0 +1,415 @@
+"""Country-specific PF with stochastic latent transmission and initially calibrated clinical coefficients.
+The V18 SEIR transition equations and untempered bootstrap likelihood are kept.
+The optional latent multiplier on infection force is learned by filtering only
+past/current data, not by future observations. No RL, tempering or Oracle.
+"""
+from __future__ import annotations
+import argparse,csv,json,warnings,math
+from pathlib import Path
+from datetime import date
+from dataclasses import replace
+import numpy as np
+from scipy.optimize import minimize, minimize_scalar
+from scipy.special import logsumexp,expit,logit
+from src.model import Model, S,E1,E2,I1,I2,H,U,R,advance,shift_history,discretise_gamma_delay,nb_logpmf
+from src.particle_filter import initial_cloud, systematic_resample,update_log_weights
+from .contacts import days
+from .observations import load as load_observations, observation_means
+
+# Epidemiological stage rates follow the UK V18 kernel; only priors, not country fits.
+PRIOR_PH=np.array([0.0020433674302426205,0.01727817630936254,0.05549757700737431])
+PRIOR_PU=np.array([0.12880760548124162,0.3693652809007758,0.1704456670934679])
+WARD_DAYS=np.array([7.8934403958654995,5.688429275580978,6.565924468773373])
+ICU_DAYS=7.382552
+AGE_NAMES=['0_44','45_64','65_plus']
+
+
+def load_calendar(root,country):
+ fn=root/'inputs'/'prepared'/f'{country}_historical_daily_contacts_v18.csv'
+ if not fn.exists(): raise FileNotFoundError(f'{fn} not found. First run python -m country_pf.contacts --country both')
+ with fn.open(newline='') as f: rows=list(csv.DictReader(f))
+ if [r['date'] for r in rows]!=[str(d) for d in days()]:
+  raise ValueError('Government contact calendar dates missing, duplicated or misaligned')
+ if any(r.get('country')!=country or 'ECDC' not in r.get('source','') for r in rows):
+  raise ValueError('Historical contact calendar has wrong country or unverified provenance')
+ C=np.array([[[float(r[f'C_{i}_{j}']) for j in range(3)] for i in range(3)] for r in rows])
+ if C.shape!=(len(days()),3,3) or not np.isfinite(C).all() or (C<0).any():
+  raise ValueError('Invalid historical contact calendar')
+ return C,rows
+
+
+def make_model(pop,C,theta,country,phi_scale=1.,phi_case=40.,phi_hosp=45.):
+ q,h,u,r=theta
+ ph=np.clip(PRIOR_PH*np.exp(h),1e-6,.85)
+ pu=np.clip(PRIOR_PU*np.exp(u),1e-6,.85)
+ rho=np.repeat(expit(logit(.3)+r),3)
+ return Model(pop,C,float(np.exp(q)),2/3,2/4,ph,pu,1/WARD_DAYS,1/ICU_DAYS,
+              rho,phi_case/phi_scale,phi_hosp/phi_scale,
+              discretise_gamma_delay(6.0,2.1,28),np.array([1.]),1.0)
+
+
+def theta_init():return np.array([math.log(.07),0.,0.,0.],dtype=float)
+BOUNDS=[(math.log(.001),math.log(.6)),(math.log(.10),math.log(8.)),(math.log(.15),math.log(5.)),(-3.,3.)]
+
+
+def seeded_initial(model,y,country,M,removed=.06):
+ pop=np.asarray(model.population,float)
+ avg=np.mean(y[:7],axis=0)
+ weights=pop*model.p_hospital;weights=weights/weights.sum()
+ expected_ih=weights*max(1.,avg[3]);
+ if country=='BE':
+  rawcases=np.linalg.lstsq(M,avg[:3],rcond=None)[0].clip(1)
+  infections=np.maximum(rawcases/np.maximum(model.rho_case,1e-3),expected_ih/np.maximum(model.p_hospital,1e-5))
+  hosp0=expected_ih*6
+  u0=np.maximum(1,avg[4])*pop*model.p_hospital*model.p_icu/(pop*model.p_hospital*model.p_icu).sum()
+ else:
+  occ=np.linalg.lstsq(M,avg[:3],rcond=None)[0].clip(0)
+  hosp0=occ
+  u0=np.maximum(1,avg[4])*pop*model.p_hospital*model.p_icu/(pop*model.p_hospital*model.p_icu).sum()
+  infections=expected_ih/np.maximum(model.p_hospital,1e-5)
+ # deliberately approximate initial disease burden prior, not observation-derived truth
+ infections=np.clip(infections,2,pop*.008)
+ x=np.zeros((3,8),float)
+ x[:,E1]=infections/model.pE
+ x[:,E2]=infections/model.pE
+ x[:,I1]=infections/model.pI
+ x[:,I2]=infections/model.pI
+ x[:,U]=np.clip(u0,0,pop*.02)
+ x[:,H]=np.maximum(hosp0-x[:,U] if country=='FR' else hosp0,0)
+ x[:,R]=removed*pop
+ x[:,S]=pop-x[:,1:].sum(axis=1)
+ if np.any(x[:,S]<0): raise ValueError('Initial prior uses more population than available')
+ hist_case=np.repeat(infections[:,None],29,axis=1)
+ hist_hosp=np.maximum(expected_ih[:,None],1)
+ return x,hist_case,hist_hosp
+
+
+def forward_mean(model,x,ch,hh,lo,hi,C,M,country):
+ ys=[]
+ for t in range(lo,hi):
+  x,inf,adm=advance(x,model,rng=None,contacts=C[t]); ch=shift_history(ch,inf); hh=shift_history(hh,adm)
+  ys.append(observation_means(country,x,inf,ch,adm,M,model.rho_case,model.delay_case))
+ return np.array(ys),x,ch,hh
+
+
+def estimate_weekday_factors(y, n_train=21, shrinkage_days=1.0, country="BE"):
+ """Train seasonal reporting *only* on initial historical calibration days.
+
+ Remove a local smooth log-trend before estimating weekday effects, regularise
+ toward zero and normalise each channel to unit mean over the seven days.
+ This changes the observation model (not transmission) for reporting flows;
+ occupied ICU beds are a stock, so do NOT apply reporting seasonality to it.
+ """
+ if n_train < 14 or n_train > len(y):
+  raise ValueError('Requires >=14 already-observed training days')
+ ly=np.log(np.maximum(y[:n_train], 1.))
+ trend=np.array([np.median(ly[max(0,i-3):min(n_train,i+4)],axis=0)
+                 for i in range(n_train)])
+ wday=np.array([d.weekday() for d in days()[:n_train]])
+ r=ly-trend
+ f=np.ones((7,5),float)
+ flow_channels=(0,1,2,3) if country=="BE" else (3,)
+ for j in flow_channels:
+  g=np.array([np.median(r[wday==wd,j]) for wd in range(7)])
+  g-=np.mean(g)
+  # Three weeks = three observations per weekday; shrink not estimate 7 free
+  # nuisance parameters without uncertainty penalty.
+  g*=min(1., (n_train/7)/(n_train/7+shrinkage_days))
+  z=np.exp(g)
+  f[:,j]=z/z.mean()  # no change in the total expected reporting/week
+ return f
+
+
+def weekday_calendar(factors):
+ return np.array([factors[d.weekday()] for d in days()])
+
+
+def fit_theta(y,C,M,country,pop,anchor,lo,hi,previous,mode,starts=3,weekday=None):
+ """Deterministic NB2 quasi-likelihood, not stochastic likelihood.
+ Fit only past observations. theta_m deployed NEXT month, never look-ahead.
+ """
+ if hi-lo<14:raise ValueError('Need at least 14 fully observed calibration days')
+ active=[0,1,2,3] if country=='BE' else [0,1,2]
+ if mode=='monthly':
+  # shrinkage avoids over-parameterising month-specific changes
+  prior_sd=np.array([.42,.35,.35,.4])
+ else:
+  prior_sd=np.array([1.15,.85,.85,.85])
+ x,ch,hh=anchor
+ def objective(z):
+  try:
+   model=make_model(pop,C[lo],z,country)
+   mu,*_=forward_mean(model,x.copy(),ch.copy(),hh.copy(),lo,hi,C,M,country)
+   if weekday is not None:mu=mu*weekday[lo:hi]
+   if not np.isfinite(mu).all() or (mu<0).any():return 1e15
+   ll=nb_logpmf(y[lo:hi],np.maximum(mu,1e-12),np.array([40,40,40,45,45]))
+   loss=-np.sum(ll)/float(hi-lo)
+   loss+=.5*np.sum(((z-previous)/prior_sd)**2)
+   return float(loss) if np.isfinite(loss) else 1e15
+  except (FloatingPointError, ValueError,OverflowError):return 1e15
+ bounds=list(BOUNDS)
+ if country=='FR':bounds[3]=(0.,0.) # reporting cannot be inferred without case data
+ sols=[]
+ for k in range(starts):
+  initial=previous.copy()
+  if k==1:initial[0]+=math.log(1.30)
+  if k==2:initial[0]-=math.log(1.30)
+  initial=np.clip(initial,[b[0] for b in bounds],[b[1] for b in bounds])
+  res=minimize(objective,initial,method='L-BFGS-B',bounds=bounds,
+               options={'maxiter':120,'ftol':1e-8,'maxls':25})
+  sols.append(res)
+ chosen=min(sols,key=lambda r:r.fun)
+ if not np.isfinite(chosen.fun) or chosen.fun>1e13:
+  raise RuntimeError(f'Failed model calibration at day {hi}. No simulated filters valid.')
+ audit={'optimizer_success':bool(chosen.success),'multistart_objectives':[float(r.fun) for r in sols],
+        'at_bounds':[int((v-lo<1e-4 or hi-v<1e-4) and hi>lo) for v,(lo,hi) in zip(chosen.x,bounds)],
+        'quasi_nll_per_day':float(chosen.fun),'n_obs_days':hi-lo}
+ return chosen.x.copy(),audit
+
+
+def fit_case_dispersion_training_only(y, pred, phi_prior=40., sd_log=1.4):
+ """Regularised NB2 case dispersion from INITIAL 21 days only.
+
+ This estimates a genuine observation-distribution property; it does NOT
+ temper/rescale weights. Later PF observations cannot affect this estimate.
+ """
+ if y.shape != pred.shape or y.ndim != 2 or y.shape[1] != 3:
+  raise ValueError('Expected 21 x 3 cases for observed and predictions')
+ if (y<0).any() or (pred<0).any() or not np.isfinite(pred).all():
+  raise ValueError('Invalid dispersion input')
+ def loss(z):
+  phi=float(np.exp(z))
+  return float(-nb_logpmf(y,np.maximum(pred,1e-12),phi).sum()
+               +.5*((z-np.log(phi_prior))/sd_log)**2)
+ res=minimize_scalar(loss,method='bounded',bounds=(np.log(4),np.log(150)),
+                     options={'xatol':1e-5})
+ if not res.success or not np.isfinite(res.fun):
+  raise RuntimeError('Initial-window NB2 dispersion fitting failed')
+ return float(np.exp(res.x))
+
+
+def plot_outputs(out, country, diags, predictions, params, qrows=None, age_q_rows=None):
+ try:
+  import matplotlib
+  matplotlib.use('Agg')
+  import matplotlib.pyplot as plt
+  from matplotlib.dates import AutoDateLocator,ConciseDateFormatter
+ except ImportError:
+  print('matplotlib not available; CSV and JSON outputs saved; skip plots')
+  return
+ d=[date.fromisoformat(x['date']) for x in diags]
+ fig,ax=plt.subplots(figsize=(11,4));ax.plot(d,[x['ESS_fraction'] for x in diags],lw=1.1)
+ ax.axhline(.5,ls='--',color='gray');ax.scatter([date.fromisoformat(x['date']) for x in diags if x['resampled']],[x['ESS_fraction'] for x in diags if x['resampled']],s=9,color='red')
+ ax.set(ylabel='pre-resampling ESS / N',title=f'{country} bootstrap PF: ESS (no tempering)')
+ ax.grid(alpha=.2);fig.autofmt_xdate();fig.tight_layout();fig.savefig(out/'ess.png',dpi=160);plt.close(fig)
+ channels=sorted(set(x['channel'] for x in predictions))
+ for channel in channels:
+  p=[x for x in predictions if x['channel']==channel]
+  fig,ax=plt.subplots(figsize=(10,3.6)); dt=[date.fromisoformat(x['date']) for x in p]
+  ax.plot(dt,[x['observed'] for x in p],label='observed',lw=1.1)
+  ax.plot(dt,[x['predicted'] for x in p],label='one-step prior mean',lw=1.2)
+  ax.fill_between(dt,[x['lower95_approx'] for x in p],[x['upper95_approx'] for x in p],alpha=.15,label='approx 95%')
+  ax.set(title=f'{country}: {channel}',ylabel='people / day or beds');ax.legend();ax.grid(alpha=.2);fig.autofmt_xdate();fig.tight_layout();fig.savefig(out/f'obs_vs_pred_{channel}.png',dpi=160);plt.close(fig)
+ fig,ax=plt.subplots(figsize=(10,3.5));
+ if qrows:
+  ax.plot([date.fromisoformat(r['date']) for r in qrows],[r['q_filtered_mean'] for r in qrows],label='filtered q(t), current/past observations')
+  ax.set(title=f'{country}: stochastic transmission q(t)')
+ else:
+  ax.step([date.fromisoformat(r['deployed_from']) for r in params],[r['q'] for r in params],where='post')
+  ax.set(title=f'{country}: monthly q (fit uses past data only)')
+ ax.set(ylabel='transmission q');ax.grid(alpha=.2);fig.autofmt_xdate();fig.tight_layout();fig.savefig(out/'monthly_q.png',dpi=160);plt.close(fig)
+ if age_q_rows:
+  fig,ax=plt.subplots(figsize=(10,3.5))
+  for a in AGE_NAMES:
+   ax.plot([date.fromisoformat(r['date']) for r in age_q_rows],
+           [r[f'q_effective_{a}'] for r in age_q_rows],label=a,lw=1.0)
+  ax.set(title=f'{country}: posterior effective transmission by latent age band',ylabel='q by age')
+  ax.legend();ax.grid(alpha=.2);fig.autofmt_xdate();fig.tight_layout();fig.savefig(out/'age_q.png',dpi=160);plt.close(fig)
+
+
+def save_rows(path,rows):
+ if not rows:raise ValueError('Attempted writing EMPTY actual results')
+ with path.open('w',newline='') as f:
+  w=csv.DictWriter(f,fieldnames=list(rows[0]));w.writeheader();w.writerows(rows)
+
+
+def run(country,root,particles,seed,limit=None,phi_scale=1.,
+        transmission_mode="latent-q", log_q_rw_sd=.10, log_q_init_sd=.08,
+        age_q_rw_sd=.08, weekday_correction='training21', case_phi_mode='calibrate21'):
+ C,contact_rows=load_calendar(root,country)
+ pop_j=json.loads((root/'inputs'/'prepared'/f'{country}_populations_2020.json').read_text())
+ pop=np.rint(pop_j['population_v18_age_0_44_45_64_65plus']).astype(np.int64)
+ pop_single=np.array(pop_j['population_single_age_0_to_100'],float)
+ y,M,channels,additional=load_observations(country,root,pop_single)
+ total=len(y) if limit is None else min(limit,len(y))
+ cal_days=21
+ if total<=cal_days:raise ValueError('Need calibration 21d plus at least one PF day')
+ if transmission_mode not in ('latent-q','monthly'):
+  raise ValueError('transmission_mode must be latent-q or monthly')
+ if weekday_correction not in ('training21','none'):
+  raise ValueError('weekday_correction must be training21 or none')
+ if case_phi_mode not in ('fixed','calibrate21'):
+  raise ValueError('case_phi_mode must be fixed or calibrate21')
+ if min(log_q_rw_sd, log_q_init_sd, age_q_rw_sd)<0 or not np.isfinite([log_q_rw_sd,log_q_init_sd,age_q_rw_sd]).all():
+  raise ValueError('Invalid latent-q process SD')
+ suffix='' if transmission_mode=='monthly' else f'_latentq_rw{log_q_rw_sd:g}_age{age_q_rw_sd:g}'
+ if transmission_mode=='latent-q' and weekday_correction=='none':suffix+='_noDOW'
+ if transmission_mode=='latent-q' and case_phi_mode=='calibrate21':suffix+='_fitPhi'
+ if phi_scale!=1.:suffix+=f'_phi{phi_scale:g}'
+ output=root/'outputs'/f'{country}_N{particles}_seed{seed}{suffix}'
+ output.mkdir(parents=True,exist_ok=True)
+ weekday_factors=(estimate_weekday_factors(y, cal_days, country=country) if transmission_mode=='latent-q' and weekday_correction=='training21' else np.ones((7,5)))
+ weekday=weekday_calendar(weekday_factors)
+ theta=theta_init()
+ model=make_model(pop,C[0],theta,country)
+ initial=seeded_initial(model,y,country,M)
+ print(f'{country}: INITIAL 21-DAY CALIBRATION (mean-field NB2), no future labels in PF')
+ theta,audit=fit_theta(y,C,M,country,pop,initial,0,cal_days,theta,'initial',weekday=weekday)
+ model=make_model(pop,C[0],theta,country)
+ mu_initial,x,ch,hh=forward_mean(model,*[p.copy() for p in initial],0,cal_days,C,M,country)
+ phi_case=40.
+ if transmission_mode=='latent-q' and case_phi_mode=='calibrate21':
+  if country=='BE':
+   phi_case=fit_case_dispersion_training_only(y[:cal_days,:3],
+                                              mu_initial[:,:3]*weekday[:cal_days,:3])
+  # France uses hospital occupancy rather than cases: case dispersion parameter
+  # is unused in its five observed streams, so do not 'fit' it to occupancy.
+ rngs=np.random.SeedSequence(seed).spawn(4)
+ init_rng,step_rng,resamp_rng,diag_rng=[np.random.default_rng(v) for v in rngs]
+ cloud=initial_cloud(x,ch,hh,model,particles,.35,init_rng)
+ # Stochastic, process-model uncertainty, sampled BEFORE seeing each day's data.
+ # A low-frequency transmission effect is missing from the near-flat reconstructed
+ # ECDC contact calendar. No after-resampling jitter, likelihood tempering, or
+ # observation-driven state correction is used. Resample this state with x/history.
+ log_q=np.log(model.q)+init_rng.normal(0., log_q_init_sd, size=particles)
+ q_min, q_max = .003, .4
+ log_q=np.clip(log_q,np.log(q_min),np.log(q_max))
+ age_logq=np.zeros((particles,3))
+ q_rows=[]; age_q_rows=[]
+ posterior_cache={cal_days:(x.copy(),ch.copy(),hh.copy())}
+ diag_rows=[];prediction_rows=[];fit_rows=[];post_rows=[]
+ fit_rows.append({'month':days()[cal_days].strftime('%Y-%m'),'deployed_from':str(days()[cal_days]),'fit_end':str(days()[cal_days-1]),'fit_days':cal_days,'q':float(model.q),'p_hospital_multiplier':float(np.exp(theta[1])),'p_icu_multiplier':float(np.exp(theta[2])),'rho_case_multiplier_on_logit':float(theta[3]),'fit_status':json.dumps(audit)})
+ for t in range(cal_days,total):
+  current=days()[t]
+  # Fit params only on information available through *yesterday*, then use them from today.
+  if transmission_mode=='latent-q' and current.day==1:
+   cloud.roots=np.arange(particles,dtype=int)  # reset ancestry diagnostic, not particles
+  if transmission_mode=='monthly' and current.day==1 and t>=cal_days+28:
+   lo=t-28
+   anchor=posterior_cache.get(lo)
+   if anchor is None:raise RuntimeError(f'Internal missing cached posterior at {lo}')
+   theta,new_audit=fit_theta(y,C,M,country,pop,anchor,lo,t,theta,'monthly')
+   model=make_model(pop,C[t],theta,country,phi_scale,phi_case=phi_case)
+   fit_rows.append({'month':current.strftime('%Y-%m'),'deployed_from':str(current),'fit_end':str(days()[t-1]),'fit_days':28,'q':float(model.q),'p_hospital_multiplier':float(np.exp(theta[1])),'p_icu_multiplier':float(np.exp(theta[2])),'rho_case_multiplier_on_logit':float(theta[3]),'fit_status':json.dumps(new_audit)})
+   cloud.roots=np.arange(particles,dtype=int) # monthly lineage diagnostic reset only
+  model=make_model(pop,C[t],theta,country,phi_scale,phi_case=phi_case)
+  prev_w=np.exp(cloud.logw)
+  if transmission_mode=='latent-q':
+   # Nonstationary latent transmission captures behavioural/contact changes not
+   # represented by the retrospective near-flat ECDC modelled contact calendar.
+   log_q=np.clip(log_q+step_rng.normal(0.,log_q_rw_sd,size=particles),
+                 np.log(q_min),np.log(q_max))
+   if age_q_rw_sd>0:
+    age_logq += step_rng.normal(0.,age_q_rw_sd,size=(particles,3))
+    age_logq -= age_logq.mean(axis=1,keepdims=True)
+    age_logq=np.clip(age_logq,-.9,.9)
+   scale=np.exp(log_q[:,None]+age_logq)/model.q
+  else:
+   scale=1.
+  cloud.x,incident,admissions=advance(cloud.x,model,step_rng,contacts=C[t],transmission_multiplier=scale);
+  cloud.case_history=shift_history(cloud.case_history,incident)
+  cloud.hospital_history=shift_history(cloud.hospital_history,admissions)
+  if (cloud.x<0).any() or not np.all(cloud.x.sum(axis=2)==pop[None,:]):
+   raise RuntimeError(f'State conservation violated {current}')
+  mu=observation_means(country,cloud.x,incident,cloud.case_history,admissions,M,model.rho_case,model.delay_case)
+  mu=mu*weekday[t]
+  if mu.shape!=(particles,5) or (mu<0).any():raise RuntimeError('Invalid observation mean matrix')
+  phi=np.array([phi_case,phi_case,phi_case,45.,45.])/phi_scale
+  pred=prev_w@mu
+  var=prev_w@(mu+mu*mu/phi+(mu-pred)**2)
+  ll=nb_logpmf(y[t],np.maximum(mu,1e-12),phi).sum(axis=1)
+  cloud.logw,evidence=update_log_weights(cloud.logw,ll)
+  w=np.exp(cloud.logw);ess=float(1./(w@w))
+  if not np.isfinite(ess):raise RuntimeError('Bad ESS')
+  resample=ess<.5*particles
+  unique=int(np.unique(cloud.roots).size)
+  coverage=[]
+  for j,chname in enumerate(channels):
+   # moment-matched predictive bands, NOT exact mixture quantiles
+   sd=np.sqrt(max(var[j],1e-12))
+   low=max(0.,pred[j]-1.96*sd);high=pred[j]+1.96*sd
+   inside=int(low<=y[t,j]<=high);coverage.append(inside)
+   prediction_rows.append({'date':str(current),'channel':chname,'observed':float(y[t,j]),'predicted':float(pred[j]),'sd_approx':float(sd),'lower95_approx':float(low),'upper95_approx':float(high),'covered95_approx':inside})
+  diag_rows.append({'date':str(current),'ESS':ess,'ESS_fraction':ess/particles,'resampled':int(resample),
+   'max_weight':float(w.max()),'unique_recent_ancestry':unique,'log_predictive_score':float(evidence),'num_observations':5,
+   'q':float(model.q),'p_hospital_scale':float(np.exp(theta[1])),'p_icu_scale':float(np.exp(theta[2])),'coverage95_approx_all_channels':int(all(coverage))})
+  for age_i,age in enumerate(AGE_NAMES):
+   for comp,ind in [('S',S),('E1',E1),('E2',E2),('I1',I1),('I2',I2),('H',H),('U',U),('R',R)]:
+    post_rows.append({'date':str(current),'age_group':age,'state':comp,'mean':float(w@cloud.x[:,age_i,ind])})
+  # Filtered posterior states for rolling fit anchor: no future data.
+  posterior_cache[t+1]=(np.tensordot(w,cloud.x,axes=(0,0)),np.tensordot(w,cloud.case_history,axes=(0,0)),np.tensordot(w,cloud.hospital_history,axes=(0,0)))
+  if transmission_mode=='latent-q':
+   q_prior=float(prev_w@np.exp(log_q))
+   q_post=float(w@np.exp(log_q))
+   q_sd=float(np.sqrt(w@(np.exp(log_q)-q_post)**2))
+   q_effective=w@np.exp(log_q[:,None]+age_logq)
+   q_relative=w@np.exp(age_logq)
+   age_q_rows.append(dict(date=str(current),**{f'q_effective_{AGE_NAMES[k]}':float(q_effective[k]) for k in range(3)},
+                          **{f'q_relative_{AGE_NAMES[k]}':float(q_relative[k]) for k in range(3)}))
+   q_rows.append({'date':str(current),'q_prior_mean':q_prior,'q_filtered_mean':q_post,
+                  'q_filtered_sd':q_sd,'q_filtered_min':float(np.exp(log_q).min()),
+                  'q_filtered_max':float(np.exp(log_q).max()),
+                  'q_bound_posterior_weight':float(w@((log_q<=np.log(q_min)+1e-10)|(log_q>=np.log(q_max)-1e-10))),
+                  'age_multiplier_bound_posterior_weight':float(w@np.mean(np.abs(age_logq)>=.9-1e-10,axis=1))})
+  if resample:
+   idx=systematic_resample(w,resamp_rng)
+   if transmission_mode=='latent-q':
+    log_q=log_q[idx].copy()
+    age_logq=age_logq[idx].copy()
+   cloud.resample(idx)
+  if (t+1)%14==0 or t==total-1:
+   qmsg=(f'{q_post:.5f} filtered' if transmission_mode=='latent-q' else f'{model.q:.5f} monthly')
+   print(f'{country} {current}: ESS/N={ess/particles:.4f} resampling={resample} q={qmsg}',flush=True)
+ save_rows(output/'filter_diagnostics_daily.csv',diag_rows)
+ save_rows(output/'observed_vs_one_step_predicted.csv',prediction_rows)
+ save_rows(output/'monthly_fit_audit.csv',fit_rows)
+ save_rows(output/'filtered_hidden_states.csv',post_rows)
+ if q_rows:
+  save_rows(output/'daily_filtered_q.csv',q_rows)
+  save_rows(output/'daily_age_transmission.csv',age_q_rows)
+  save_rows(output/'initial_calibration_audit.csv',fit_rows[:1])
+ if transmission_mode=='latent-q':
+  save_rows(output/'weekday_reporting_factors.csv',
+            [dict(weekday=k,**{channels[j]:float(weekday_factors[i,j]) for j in range(5)})
+             for i,k in enumerate(['Mon','Tue','Wed','Thu','Fri','Sat','Sun'])])
+ summary={'country':country,'dataset':'REAL OFFICIAL CLINICAL + ECDC reconstructed contacts','particles':particles,'seed':seed,'monthly_fit': ('previous 28 days monthly quasi-likelihood' if transmission_mode=='monthly' else 'OFF: static initial clinical severity and reporting; q(t) latent stochastic state'),'pf':'untempered bootstrap PF with systematic resampling ESS threshold 50%','ess_min_frac':float(min(r['ESS_fraction'] for r in diag_rows)),'ess_median_frac':float(np.median([r['ESS_fraction'] for r in diag_rows])),'resampling_days':int(sum(r['resampled'] for r in diag_rows)),'filter_days':len(diag_rows),'initial_calibration_days':cal_days,'final_q':float(q_rows[-1]['q_filtered_mean'] if q_rows else model.q),'phi_cases_base':phi_case,'phi_hospital_base':45.,'case_phi_mode':case_phi_mode,'phi_scale':phi_scale,'q_process_log_sd_per_day':(log_q_rw_sd if q_rows else 0.),'age_relative_q_process_log_sd_per_day':(age_q_rw_sd if q_rows else 0.),'transmission_mode':transmission_mode,'weekday_reporting_factors':('estimated on 21 initial dates only' if q_rows and weekday_correction=='training21' else 'none'),'channels':channels,'source_contact':'ECDC CoMix+NPI reconstructed 4x4, population-weighted to V18 3x3','clinical_severity_reference':'UK V18 priors, rescaled using country data; not externally validated','no_tempering':True,'no_oracle':True,'no_rl':True,'validation_status':'PF_DIAGNOSTICS_READY_NOT_PASS_CERTIFIED','warning':'High ESS does not establish model accuracy. Compare predictive scores, coverage and fit across seeds/phi sensitivity. No untouched country validation set.'}
+ if q_rows:
+  summary.update(ess_below_5pct_days=int(sum(r['ESS_fraction'] < .05 for r in diag_rows)),
+                 mean_daily_joint_log_predictive_score=float(np.mean([r['log_predictive_score'] for r in diag_rows])),
+                 approximate_95_coverage_by_channel={ch:float(np.mean([r['covered95_approx'] for r in prediction_rows if r['channel']==ch])) for ch in channels},
+                 last_age_effective_q={AGE_NAMES[k]:float(age_q_rows[-1][f'q_effective_{AGE_NAMES[k]}']) for k in range(3)},
+                 last_day_R_fraction=float(sum(r['mean'] for r in post_rows[-24:] if r['state']=='R')/pop.sum()))
+ (output/'summary.json').write_text(json.dumps(summary,indent=2))
+ plot_outputs(output,country,diag_rows,prediction_rows,fit_rows,q_rows,age_q_rows)
+ print(f'{country} done: {json.dumps(summary,indent=2)}')
+ return summary
+
+def main():
+ ap=argparse.ArgumentParser(description=__doc__)
+ ap.add_argument('--country',choices=['BE','FR','both'],default='both')
+ ap.add_argument('--particles',type=int,default=5000)
+ ap.add_argument('--seed',type=int,default=22026)
+ ap.add_argument('--smoke-days',type=int,default=None,help='Total observation days, including 21-day calibration, for functionality test only')
+ ap.add_argument('--phi-scale',type=float,default=1.0,help='Sensitivity multiplier for observation dispersion variance, not ESS tempering')
+ ap.add_argument('--transmission-mode', choices=['latent-q','monthly'],default='latent-q',help='latent-q: stochastic transmission PF, monthly: reproduce original implementation')
+ ap.add_argument('--log-q-rw-sd',type=float,default=.10,help='Log q latent random walk SD per day (sensitivity analysis essential)')
+ ap.add_argument('--log-q-init-sd',type=float,default=.08,help='Initial log q particle prior SD')
+ ap.add_argument('--age-q-rw-sd',type=float,default=.08,help='Optional age-specific relative log transmission random walk SD per day')
+ ap.add_argument('--weekday-correction',choices=['training21','none'],default='training21',help='Train weekday reporting on days 1-21 only; ablation option none')
+ ap.add_argument('--case-phi-mode',choices=['fixed','calibrate21'],default='calibrate21',help='Optional regularised fit of NB2 case dispersion on initial 21 days only')
+ ap.add_argument('--root',type=Path,default=Path(__file__).resolve().parent.parent)
+ args=ap.parse_args()
+ if args.particles<100 or args.phi_scale<=0:raise ValueError('Invalid particles/phi-scale')
+ for c in (['BE','FR'] if args.country=='both' else [args.country]):
+  run(c,args.root,args.particles,args.seed,args.smoke_days,args.phi_scale,args.transmission_mode,args.log_q_rw_sd,args.log_q_init_sd,args.age_q_rw_sd,args.weekday_correction,args.case_phi_mode)
+if __name__=='__main__':main()

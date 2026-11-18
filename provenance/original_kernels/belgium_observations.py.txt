@@ -1,0 +1,59 @@
+"""Observed national sources: no fabricated per-age admissions or zero-filled missing records."""
+import csv
+from datetime import date
+from pathlib import Path
+import numpy as np
+from .contacts import days
+
+
+def load(country:str, root:Path, pop_single:np.ndarray):
+    fn=root/'inputs'/('belgium_official_daily_242days.csv' if country=='BE' else 'france_official_daily_242days.csv')
+    if not fn.exists():raise FileNotFoundError(fn)
+    with fn.open(newline='') as f: rows=list(csv.DictReader(f))
+    dates=[d.isoformat() for d in days()]
+    rows=[r for r in rows if dates[0] <= r['date'] <= dates[-1]]
+    if len(rows)!=len(dates) or [r['date'] for r in rows]!=dates:
+        raise ValueError('Observations must have 153 unique contiguous dates 2020-09-01 to 2021-01-31')
+    def values(row,keys):
+        try: out=np.array([float(row[k]) for k in keys],dtype=float)
+        except Exception as exc:raise ValueError(f'Missing/invalid real observation row {row.get("date")} {keys}') from exc
+        if not np.isfinite(out).all() or (out<0).any():raise ValueError(f'Invalid real observation on {row["date"]}')
+        return out
+    M=np.zeros((3,3),float)
+    N=np.array([pop_single[:45].sum(),pop_single[45:65].sum(),pop_single[65:].sum()])
+    # Reporting groups 0-39, 40-59, 60+ are exactly aggregable from source deciles.
+    # Mapping FROM latent 0-44,45-64,65+ assumes constant per-person rate within each model band.
+    M[:,0]=[pop_single[:40].sum(),pop_single[40:45].sum(),0]
+    M[:,1]=[0,pop_single[45:60].sum(),pop_single[60:65].sum()]
+    M[:,2]=[0,0,pop_single[65:].sum()]
+    M=M/N[None,:]
+    assert np.allclose(M.sum(axis=0),1)
+    ys=[]; supplementary=[]
+    for r in rows:
+        if country=='BE':
+            cs=values(r,[f'cases_{a}' for a in ['0-9','10-19','20-29','30-39','40-49','50-59','60-69','70-79','80-89','90+']])
+            if not np.isclose(cs.sum()+float(r['cases_age_unknown']),float(r['cases_total'])):
+                raise ValueError(f'Cases do not reconcile with source total on {r["date"]}')
+            new_in,icu=values(r,['admissions_total','icu_occupied_total'])
+            # NEW_IN_ICU is identical to NEW_IN in this uploaded dataset; NOT an independent channel.
+            vals=np.r_[cs[:4].sum(),cs[4:6].sum(),cs[6:].sum(),new_in,icu]
+            supplementary.append({'date':r['date'],'respiratory_support_total':r['respiratory_support_total'],'deaths_total':r['deaths_total']})
+        else:
+            hp=values(r,[f'hospital_occupied_age_{k}' for k in [9,19,29,39,49,59,69,79,89,90]])
+            new_in,icu=values(r,['admissions_total','icu_occupied_all_ages'])
+            vals=np.r_[hp[:4].sum(),hp[4:6].sum(),hp[6:].sum(),new_in,icu]
+            supplementary.append({'date':r['date'],'hospital_deaths_new_total':r['hospital_deaths_new_total'],'ICU_total':icu})
+        ys.append(vals)
+    return np.stack(ys),M,['cases_0_39','cases_40_59','cases_60_plus','admissions_total','icu_occupied_total'] if country=='BE' else ['hospital_occupied_0_39','hospital_occupied_40_59','hospital_occupied_60_plus','admissions_total','icu_occupied_total'],supplementary
+
+
+def observation_means(country,cloud_x,new_infections,history,admissions,M,rho,delay):
+    """N particles or deterministic state. Returns n x 5 (or single vector)."""
+    # history shape (N,3,lag), if deterministic shape (3,lag)
+    base_case=(history @ delay)*rho
+    group_case=base_case@M.T
+    group_hosp=(cloud_x[...,5]+cloud_x[...,6])@M.T
+    hospital=admissions.sum(axis=-1)
+    icu=cloud_x[...,6].sum(axis=-1)
+    left=group_case if country=='BE' else group_hosp
+    return np.concatenate([left,hospital[...,None],icu[...,None]],axis=-1)

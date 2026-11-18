@@ -1,0 +1,293 @@
+"""Belgian V7 transmission/clinical kernel, policy-conditioned V18 research simulator.
+Current-time oracle is SIMULATION TRUTH only, never a real-data Bayesian claim.
+"""
+from __future__ import annotations
+import math,sys
+from dataclasses import dataclass
+from datetime import date,timedelta
+from pathlib import Path
+import numpy as np
+from scipy.special import logsumexp
+from .bridge import START,END,DEC,DATES,contacts,social_loss
+from .tail import TAIL_DAYS, TAIL_START, TAIL_END, validate_actions
+
+S,E1,E2,I1,I2,H,U,R=range(8)
+
+@dataclass
+class Truth:
+    x:np.ndarray
+    ch:np.ndarray
+    hh:np.ndarray
+    logq:float
+    age:np.ndarray
+    deaths:np.ndarray
+    def copy(self):return Truth(self.x.copy(),self.ch.copy(),self.hh.copy(),float(self.logq),self.age.copy(),self.deaths.copy())
+
+@dataclass
+class Belief:
+    x:np.ndarray
+    ch:np.ndarray
+    hh:np.ndarray
+    logq:np.ndarray
+    age:np.ndarray
+    logw:np.ndarray
+    def copy(self):return Belief(*(getattr(self,k).copy() for k in ('x','ch','hh','logq','age','logw')))
+    @property
+    def weights(self):
+        z=np.exp(self.logw);return z/z.sum()
+    @property
+    def n(self):return len(self.logw)
+    def resample(self,idx):
+        for k in ('x','ch','hh','logq','age'):
+            setattr(self,k,getattr(self,k)[idx].copy())
+        self.logw[:]=-np.log(len(idx))
+
+class Engine:
+    def __init__(self,be,tail_calendar=None):
+        self.be=be;self.pop=np.asarray(be.pop,dtype=np.int64)
+        # Never silently carry Dec1 government action for 56 days: the Belgian
+        # legal calendar changed in Jan/Feb/Mar. CoMix-derived calendar required.
+        if tail_calendar is None:
+            raise ValueError('Missing verified Belgian 56-day tail contact calendar: run PREPARE_BE_TAIL.py')
+        self.tail_days=TAIL_DAYS
+        self.tail_calendar=validate_actions(tail_calendar).copy()
+        sys.path.insert(0,str(be.root))
+        from country_pf.run_pf import make_model
+        self._make_model=make_model
+        from src.model import advance,shift_history,nb_logpmf
+        from src.particle_filter import initial_cloud,systematic_resample,update_log_weights
+        from country_pf.run_pf import seeded_initial,forward_mean,fit_case_dispersion_training_only
+        from country_pf.observations import observation_means
+        self.advance,self.shift,self.nb=advance,shift_history,nb_logpmf
+        self.original_initial=initial_cloud;self.resample=systematic_resample;self.update_w=update_log_weights
+        self.seeded_initial=seeded_initial;self.forward_mean=forward_mean
+        self.fit_phi=fit_case_dispersion_training_only;self.obs_mean=observation_means
+        self.c_action=np.stack([contacts(be.home,be.nh,a) for a in __import__('itertools').product([1.,.7,.4,.2],repeat=3)])
+        self.actions=np.array(list(__import__('itertools').product([1.,.7,.4,.2],repeat=3)),float)
+        self.loss=np.array([social_loss(be.pop,be.reference,c) for c in self.c_action])
+        self.costs=np.array([self.loss*dur for dur in (14,14,14,14,14,14,12)])
+        self.q0=float(np.exp(be.theta0[0]))
+
+    def model(self,stage='initial'):
+        theta=self.be.theta0 if stage=='initial' else self.be.theta_dec
+        return self._make_model(self.pop,self.be.original_ecdc[0],theta,'BE',phi_case=self.be.phi_case)
+
+    @staticmethod
+    def model_regime(at_date,origin):
+        """At pre-Dec decision, all simulated futures use old model (no future fit leakage).
+        Post-Dec decision may use the 30-Nov-reestimated coefficients.
+        Deployment on Dec1 switches model exactly then.
+        """
+        return 'December' if origin>=DEC else 'initial'
+
+    def bootstrap_oct11(self,n,seed):
+        """Replay factual Belgium ECDC only through 11 Oct using V7 initial calibration.
+        NO Oct12+ observations or V5 post-Oct actions ever enter this posterior.
+        """
+        be=self.be
+        model0=self.model('initial')
+        y=be.y;C=be.original_ecdc;M=be.mapping
+        # Initial mean-field state exactly like the V7 21-day calibration postprocess.
+        from country_pf.run_pf import theta_init
+        start=self.seeded_initial(self._make_model(self.pop,C[0],theta_init(),'BE'),y,'BE',M)
+        _,x,ch,hh=self.forward_mean(model0,*[z.copy() for z in start],0,21,C,M,'BE')
+        rngs=[np.random.default_rng(ss) for ss in np.random.SeedSequence(seed).spawn(4)]
+        ir,tr,rr,_=rngs
+        raw=self.original_initial(x,ch,hh,model0,n,.35,ir)
+        lq=np.log(model0.q)+ir.normal(0,.08,n);ag=np.zeros((n,3))
+        phi=np.r_[np.repeat(be.phi_case,3),45.,45.]
+        # t=21 is 2020-09-22; through Oct11 is index 40 inclusive.
+        stop=(START-date(2020,9,1)).days
+        for t in range(21,stop):
+            lq+=tr.normal(0,.1,n)
+            ag+=tr.normal(0,.08,(n,3));ag-=ag.mean(axis=1,keepdims=True)
+            scale=np.exp(lq[:,None]+ag)/model0.q
+            raw.x,inc,adm=self.advance(raw.x,model0,tr,contacts=C[t],transmission_multiplier=scale)
+            raw.case_history=self.shift(raw.case_history,inc)
+            raw.hospital_history=self.shift(raw.hospital_history,adm)
+            mu=self.obs_mean('BE',raw.x,inc,raw.case_history,adm,M,model0.rho_case,model0.delay_case)*be.weekday[t][None,:]
+            ll=self.nb(y[t],np.maximum(mu,1e-12),phi).sum(axis=1)
+            raw.logw,_=self.update_w(raw.logw,ll)
+            w=np.exp(raw.logw);ess=1/np.dot(w,w)
+            if ess<.5*n:
+                ids=self.resample(w,rr);raw.resample(ids);lq=lq[ids].copy();ag=ag[ids].copy()
+        belief=Belief(raw.x,raw.case_history,raw.hospital_history,lq,ag,raw.logw)
+        self.assert_valid_belief(belief)
+        return belief
+
+    def assert_valid_belief(self,b):
+        if b.x.shape!=(b.n,3,8) or not np.all(b.x.sum(axis=2)==self.pop[None,:]):
+            raise AssertionError('PF particles violate population conservation')
+        if (b.x<0).any() or not np.isfinite(b.logw).all() or not np.isclose(b.weights.sum(),1):
+            raise AssertionError('Bad PF particles/weights')
+
+    def draw_truth(self,b,rng):
+        j=int(rng.choice(b.n,p=b.weights));return Truth(b.x[j].copy(),b.ch[j].copy(),b.hh[j].copy(),float(b.logq[j]),b.age[j].copy(),np.zeros(3,dtype=np.int64))
+
+    def features_truth(self,t,prev,remaining,spent):
+        """Exactly the original V18 23 features, with Belgian q and populations."""
+        feat=[]
+        for g in range(3):
+            z=t.x[g].astype(float);p=self.pop[g]
+            feat += [z[S]/p,(z[E1]+z[E2])/p,(z[I1]+z[I2])/p,z[H]/p,z[U]/p,
+                     np.exp(t.logq+t.age[g])/self.q0]
+        feat += [*prev,remaining/96.,(self.be.budget-spent)/self.be.budget]
+        return np.array(feat,np.float32)
+
+    def features_belief(self,b,prev,remaining,spent):
+        w=b.weights;feat=[]
+        for g in range(3):
+            z=b.x[:,g,:].astype(float);p=self.pop[g]
+            feat += [w@z[:,S]/p,w@(z[:,E1]+z[:,E2])/p,w@(z[:,I1]+z[:,I2])/p,
+                     w@z[:,H]/p,w@z[:,U]/p,w@np.exp(b.logq+b.age[:,g])/self.q0]
+        feat += [*prev,remaining/96.,(self.be.budget-spent)/self.be.budget]
+        return np.array(feat,np.float32)
+
+    def _transition_deaths(self,t,model,C,rng):
+        """Same ordered binomial state transitions as src.model.advance; deaths tag R exits.
+        """
+        x=t.x;q=np.exp(t.logq+t.age)
+        inf=x[:,I1]+model.xi*x[:,I2]
+        hazard=q*((inf/self.pop)@C.T)
+        p=-np.expm1(-hazard)
+        a=rng.binomial(x[:,S],np.clip(p,0,1))
+        b=rng.binomial(x[:,E1],model.pE)
+        c=rng.binomial(x[:,E2],model.pE)
+        d=rng.binomial(x[:,I1],model.pI)
+        ei=rng.binomial(x[:,I2],model.pI)
+        ih=rng.binomial(ei,model.p_hospital);ir=ei-ih
+        eh=rng.binomial(x[:,H],model.p_exit_hospital)
+        hu=rng.binomial(eh,model.p_icu);hr=eh-hu
+        ur=rng.binomial(x[:,U],model.p_exit_icu)
+        nx=x.copy()
+        nx[:,S]-=a;nx[:,E1]+=a-b;nx[:,E2]+=b-c;nx[:,I1]+=c-d
+        nx[:,I2]+=d-ih-ir;nx[:,H]+=ih-hu-hr;nx[:,U]+=hu-ur;nx[:,R]+=ir+hr+ur
+        if (nx<0).any() or not np.array_equal(nx.sum(axis=1),self.pop):raise RuntimeError('Invalid truth epidemiological transition')
+        deaths=sum((rng.binomial(arr,self.be.mort[key]) for arr,key in ((ir,'I2_R'),(hr,'H_R'),(ur,'U_R'))))
+        t.x=nx;t.deaths+=deaths;t.ch=self.shift(t.ch,a);t.hh=self.shift(t.hh,ih)
+        return a,ih,deaths
+
+    def simulate_day(self,t,action,dt,rng,model_mode='initial',with_observation=True):
+        """State evolves with Belgian q random walk; NO clinical future data.
+        Observation returned is a **synthetic** outcome generated under chosen action.
+        """
+        m=self.model(model_mode);a=np.asarray(action,float)
+        C=contacts(self.be.home,self.be.nh,a)
+        if getattr(self,'guided_world_q',None) is None:
+            t.logq+=rng.normal(0,.1)
+            t.age+=rng.normal(0,.08,3);t.age-=np.mean(t.age)
+        else:
+            if dt not in self.guided_world_q:
+                raise RuntimeError('Missing ex-post world q '+str(dt))
+            eff=np.log(self.guided_world_q[dt]);t.logq=float(eff.mean())
+            t.age=(eff-eff.mean()).copy()
+        new_inf,adm,deaths=self._transition_deaths(t,m,C,rng)
+        mu=self.obs_mean('BE',t.x,new_inf,t.ch,adm,self.be.mapping,m.rho_case,m.delay_case)
+        if dt>=date(2020,9,1):
+            # V7's weekday reporting pattern repeats its original 7-day cycle
+            # after Jan 31; do not erroneously remove weekday effects in tail.
+            k=(dt-date(2020,9,1)).days
+            week=self.be.weekday
+            # day-of-week repeats every 7 days; k modulo 7 resolves exact weekday
+            # given original model's first observation date 1 Sep 2020.
+            mu=mu*week[k if k<len(week) else k%7]
+        if (mu<0).any() or not np.isfinite(mu).all():raise RuntimeError('Bad observation means')
+        if with_observation:
+            phi=np.r_[np.repeat(self.be.phi_case,3),45.,45.]
+            y=rng.negative_binomial(phi,phi/(phi+np.maximum(mu,1e-12)))
+        else:y=np.zeros(5)
+        return y,dict(cases_reported=float(mu[:3].sum()),cases_0_39=float(mu[0]),cases_40_59=float(mu[1]),cases_60_plus=float(mu[2]),admissions=float(adm.sum()),icu=float(t.x[:,U].sum()),
+                      deaths=float(deaths.sum()),icu_patient_days=float(t.x[:,U].sum()),latent_new_infections=float(new_inf.sum()),
+                      clinical_model=model_mode)
+
+    def _oracle_metrics(self,b,t):
+        w=b.weights;m=[]
+        for g in range(3):
+            z=b.x[:,g]
+            for ids,floor,thresh in [((I1,I2),40.,1.25),((H,),5.,1.5),((U,),3.,1.5)]:
+                mean=float(w@z[:,ids].sum(axis=1));truth=float(t.x[g,list(ids)].sum())
+                ratio=(truth+floor)/(mean+floor)
+                if max(ratio,1/ratio)>thresh:m.append('compartment_age'+str(g)+'_'+str(ids))
+            qmean=float(w@np.exp(b.logq+b.age[:,g]));qt=float(np.exp(t.logq+t.age[g]))
+            if max(qmean/qt,qt/qmean)>1.2:m.append('q_age'+str(g))
+            if abs(w@z[:,S]-t.x[g,S])/self.pop[g]>.0005:m.append('S_age'+str(g))
+        return m
+
+    def oracle(self,b,t):
+        why=self._oracle_metrics(b,t)
+        if not why:return b,[]
+        z=np.repeat
+        return Belief(z(t.x[None,...],b.n,axis=0),z(t.ch[None,...],b.n,axis=0),
+                      z(t.hh[None,...],b.n,axis=0),np.full(b.n,t.logq),
+                      z(t.age[None,...],b.n,axis=0),np.full(b.n,-math.log(b.n))),why
+
+    def assimilate_synthetic(self,b,t,y,action,dt,rng,model_mode):
+        """PF with synthetic counterfactual Y only. No real observations here.
+        Current-time oracle recovery when PF diverges. Oracle reads ONLY current truth.
+        """
+        n=b.n;m=self.model(model_mode)
+        b.logq+=rng.normal(0,.1,n)
+        b.age+=rng.normal(0,.08,(n,3));b.age-=b.age.mean(axis=1,keepdims=True)
+        C=contacts(self.be.home,self.be.nh,action)
+        b.x,inc,adm=self.advance(b.x,m,rng,contacts=C,transmission_multiplier=np.exp(b.logq[:,None]+b.age)/m.q)
+        b.ch=self.shift(b.ch,inc);b.hh=self.shift(b.hh,adm)
+        mu=self.obs_mean('BE',b.x,inc,b.ch,adm,self.be.mapping,m.rho_case,m.delay_case)
+        if dt>=date(2020,9,1):
+            k=(dt-date(2020,9,1)).days
+            b_week=self.be.weekday
+            mu*=b_week[k if k<len(b_week) else k%7]
+        phi=np.r_[np.repeat(self.be.phi_case,3),45.,45.]
+        try:
+            ll=self.nb(y,np.maximum(mu,1e-12),phi).sum(axis=1)
+            b.logw,_=self.update_w(b.logw,ll)
+        except RuntimeError as exc:
+            b,why=self.oracle(b,t)
+            # If symmetric posterior happens exactly match truth, force reconstruction on numeric failures.
+            if not why:
+                b.logq+=0.
+                b=Belief(np.repeat(t.x[None,...],n,axis=0),np.repeat(t.ch[None,...],n,axis=0),
+                   np.repeat(t.hh[None,...],n,axis=0),np.full(n,t.logq),np.repeat(t.age[None,...],n,axis=0),np.full(n,-np.log(n)))
+            return b,0.,['NUMERIC_PF_FAILURE_'+str(exc)]
+        w=b.weights;ess=1/float(w@w)/n
+        if ess<.5:
+            ids=self.resample(w,rng);b.resample(ids)
+        b,why=self.oracle(b,t)
+        self.assert_valid_belief(b)
+        return b,float(ess),why
+
+    def from_oct11(self,base_belief,rng,particles):
+        t=self.draw_truth(base_belief,rng)
+        ii=rng.choice(base_belief.n,size=int(particles),replace=True,p=base_belief.weights)
+        b=Belief(base_belief.x[ii].copy(),base_belief.ch[ii].copy(),base_belief.hh[ii].copy(),
+                 base_belief.logq[ii].copy(),base_belief.age[ii].copy(),np.full(len(ii),-np.log(len(ii))))
+        return t,b
+
+    def bridge_to_oct12(self,b):
+        """Same observational gauge transformation as Belgian V7.
+        Preserve infection pressure exactly when ECDC Sep/Oct calendar switches to V5.
+        """
+        old=self.be.original_ecdc[(START-date(2020,9,1)).days-1]
+        new=self.be.c_gov[0]
+        model=self.model('initial')
+        inf=(b.x[:,:,I1]+model.xi*b.x[:,:,I2])/self.pop[None,:]
+        fo=inf@old.T;fn=inf@new.T
+        if (fo<=0).any() or (fn<=0).any():
+            raise RuntimeError('October q gauge transformation has zero infectious pressure')
+        effective=b.logq[:,None]+b.age
+        ee=effective+np.log(fo/fn)
+        qnew=ee.mean(axis=1)
+        anew=ee-qnew[:,None]
+        if not np.allclose(np.exp(qnew[:,None]+anew)*fn,np.exp(effective)*fo,rtol=1e-12):
+            raise AssertionError('October gauge not preserving infectious pressure')
+        b.logq[:]=qnew;b.age[:]=anew
+        return b
+
+    def continue_health_only(self,truth,seed):
+        """Belgium Jan16--Mar12 common Government-contact tail for all policy arms.
+
+        No PF, no DDQN decisions, no social-budget charge. Clinical model
+        fitted from the end of November is used throughout. Any simulated
+        infections after Jan15 can still lead to deaths or ICU burden.
+        """
+        from .tail import simulate_health_tail
+        return simulate_health_tail(self,truth,self.tail_calendar,seed,clinical_mode='December')

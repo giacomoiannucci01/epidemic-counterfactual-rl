@@ -1,0 +1,559 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import date
+from itertools import product
+import math
+from pathlib import Path
+from typing import Optional
+
+import numpy as np
+from scipy.special import logsumexp
+from scipy.stats import norm
+
+from src.model import S, E1, E2, I1, I2, H, U, R, shift_history
+from src.particle_filter import initial_cloud, systematic_resample, update_log_weights
+from adaptive_pf_v5.v5_helper import (
+    rho_from_shift,
+    observation_means_base,
+    case_joint_robust_loglik,
+    vaccine_severity_modifier_65plus,
+)
+
+
+ACTION_LEVELS = (1.0, 0.7, 0.4)
+ACTIONS = np.asarray(list(product(ACTION_LEVELS, repeat=3)), dtype=float)
+
+
+@dataclass
+class V5ControlConstants:
+    hscale: np.ndarray
+    phi6: np.ndarray
+    dow: np.ndarray
+    hospital_intercept: np.ndarray
+    hospital_phi: np.ndarray
+    hospital_sigma: np.ndarray
+    pi_mv: float
+    c_mv: float
+    case_outlier_epsilon: float
+    case_outlier_phi_factor: float
+    case_scale: np.ndarray
+    sigma_q_week: float
+    sigma_rho_week: float
+    vaccine_ve: float
+    vaccine_lag_days: int
+    vax_proxy: dict
+    rho_mode: str = "common"
+
+    @property
+    def sigma_q_day(self) -> float:
+        return self.sigma_q_week / math.sqrt(7.0)
+
+    @property
+    def sigma_rho_day(self) -> float:
+        return self.sigma_rho_week / math.sqrt(7.0)
+
+
+@dataclass
+class BeliefCloud:
+    """Exact particle-filter state needed to continue V5 filtering under control."""
+
+    x: np.ndarray
+    case_history: np.ndarray
+    hospital_history: np.ndarray
+    q: np.ndarray
+    zrho: np.ndarray
+    eH: np.ndarray
+    u_prev: np.ndarray
+    y_mv_prev: float
+    logw: np.ndarray
+    deaths: Optional[np.ndarray] = None  # (particles,3); cumulative deaths after 12 October, subset of R
+    death_route_counts: Optional[np.ndarray] = None  # (particles,3 clinical routes,3 ages)
+    mortality_probabilities: Optional[dict] = None  # immutable clinical route probabilities
+
+    @property
+    def n(self) -> int:
+        return int(self.x.shape[0])
+
+    @property
+    def weights(self) -> np.ndarray:
+        w = np.exp(self.logw)
+        return w / w.sum()
+
+    def copy(self) -> "BeliefCloud":
+        return BeliefCloud(
+            self.x.copy(), self.case_history.copy(), self.hospital_history.copy(),
+            self.q.copy(), self.zrho.copy(), self.eH.copy(), self.u_prev.copy(),
+            float(self.y_mv_prev), self.logw.copy(),
+            None if self.deaths is None else self.deaths.copy(),
+            None if self.death_route_counts is None else self.death_route_counts.copy(),
+            self.mortality_probabilities,
+        )
+
+    def resample(self, indices: np.ndarray) -> None:
+        indices = np.asarray(indices, dtype=np.int64)
+        self.x = self.x[indices].copy()
+        self.case_history = self.case_history[indices].copy()
+        self.hospital_history = self.hospital_history[indices].copy()
+        self.q = self.q[indices].copy()
+        self.zrho = self.zrho[indices].copy()
+        self.eH = self.eH[indices].copy()
+        self.u_prev = self.u_prev[indices].copy()
+        if self.deaths is not None:
+            self.deaths = self.deaths[indices].copy()
+        if self.death_route_counts is not None:
+            self.death_route_counts = self.death_route_counts[indices].copy()
+        self.logw = np.full(len(indices), -math.log(len(indices)), dtype=float)
+
+
+@dataclass
+class TruthState:
+    """One hidden counterfactual epidemic used only by the simulator/evaluator."""
+
+    x: np.ndarray                 # (3, 8)
+    case_history: np.ndarray      # (3, 29)
+    hospital_history: np.ndarray  # (3, 1)
+    q: np.ndarray                 # (3,)
+    zrho: float
+    eH: np.ndarray                # (3,)
+    u_prev: float
+    y_mv_prev: float
+    deaths: Optional[np.ndarray] = None  # cumulative deaths after start, per age
+
+    def copy(self) -> "TruthState":
+        return TruthState(
+            self.x.copy(), self.case_history.copy(), self.hospital_history.copy(),
+            self.q.copy(), float(self.zrho), self.eH.copy(), float(self.u_prev),
+            float(self.y_mv_prev),
+            None if self.deaths is None else self.deaths.copy(),
+        )
+
+
+def action_contact_matrix(
+    base_contact: np.ndarray,
+    action: np.ndarray,
+    household_contact: Optional[np.ndarray] = None,
+    nonhousehold_contact: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    """Construct the action-specific reciprocal contact matrix.
+
+    If a household/non-household split is supplied, household contacts are left
+    unchanged and only non-household contacts are scaled:
+        C(a) = C_H + D(a) C_NH D(a).
+
+    The validated V5 empirical model only contains one total contact matrix. In
+    that case the default counterfactual control assumption is
+        C(a) = D(a) C_0 D(a).
+    This assumption is isolated here so a genuine household split can be plugged
+    in later without changing the RL/PF code.
+    """
+    a = np.asarray(action, dtype=float)
+    if a.shape != (3,) or np.any(a <= 0) or np.any(a > 1):
+        raise ValueError("Action must contain three multipliers in (0,1].")
+    D = np.diag(np.sqrt(a))
+    if household_contact is not None or nonhousehold_contact is not None:
+        if household_contact is None or nonhousehold_contact is None:
+            raise ValueError("Supply both household and nonhousehold matrices or neither.")
+        return np.asarray(household_contact, float) + D @ np.asarray(nonhousehold_contact, float) @ D
+    return D @ np.asarray(base_contact, float) @ D
+
+
+def social_contact_loss(population: np.ndarray, base_contact: np.ndarray, controlled_contact: np.ndarray) -> float:
+    """Population-weighted fraction of baseline contacts removed by an action."""
+    pop = np.asarray(population, float)
+    base = np.asarray(base_contact, float)
+    cur = np.asarray(controlled_contact, float)
+    denom = float(np.sum(pop[:, None] * base))
+    if denom <= 0:
+        raise ValueError("Baseline contact volume must be positive.")
+    return float(np.sum(pop[:, None] * (base - cur)) / denom)
+
+
+def _advance_controlled(
+    x: np.ndarray,
+    q: np.ndarray,
+    model,
+    rng: np.random.Generator,
+    severity65_multiplier: float,
+    contacts: np.ndarray,
+    return_flows: bool = False,
+):
+    """V5 stochastic epidemic transition with particle-specific q and controlled contacts."""
+    infectious = x[..., I1] + model.xi * x[..., I2]
+    pressure = (infectious / model.population) @ np.asarray(contacts, float).T
+    p_inf = -np.expm1(-(q * getattr(model, "transmission_scale", 1.0) * pressure))
+    p_inf = np.clip(p_inf, 0.0, 1.0)
+
+    a = rng.binomial(x[..., S], p_inf)
+    b = rng.binomial(x[..., E1], model.pE)
+    c = rng.binomial(x[..., E2], model.pE)
+    d = rng.binomial(x[..., I1], model.pI)
+
+    exit_i = rng.binomial(x[..., I2], model.pI)
+    ph = np.broadcast_to(model.p_hospital, x.shape[:-1]).copy()
+    ph[..., 2] = np.clip(ph[..., 2] * severity65_multiplier, 1e-12, 1.0)
+    ih = rng.binomial(exit_i, ph)
+    ir = exit_i - ih
+
+    exit_h = rng.binomial(x[..., H], model.p_exit_hospital)
+    hu = rng.binomial(exit_h, model.p_icu)
+    hr = exit_h - hu
+    ur = rng.binomial(x[..., U], model.p_exit_icu)
+
+    out = x.copy()
+    out[..., S] -= a
+    out[..., E1] += a - b
+    out[..., E2] += b - c
+    out[..., I1] += c - d
+    out[..., I2] += d - ih - ir
+    out[..., H] += ih - hu - hr
+    out[..., U] += hu - ur
+    out[..., R] += ir + hr + ur
+    if return_flows:
+        return out, a, ih, {"I2_R":ir, "H_R":hr, "U_R":ur, "H_U":hu}
+    return out, a, ih
+
+
+def draw_route_deaths(flows, mortality_probs, rng, return_components=False):
+    """Tag non-overlapping exits as deaths without changing the V12 R dynamics.
+
+    Death counts are *subsets* of original exits into R. One binomial per
+    exclusive route and age. Do not also draw deaths from an IFR.
+    """
+    total = np.zeros_like(flows["I2_R"], dtype=np.int64)
+    components={}
+    for route in ("I2_R", "H_R", "U_R"):
+        prob = np.asarray(mortality_probs[route], float)
+        if prob.shape != (3,) or np.any((prob < 0) | (prob > 1)):
+            raise ValueError(f"Invalid mortality probability for {route}")
+        components[route] = rng.binomial(flows[route], prob)
+        total += components[route]
+    return (total, components) if return_components else total
+
+
+def make_initial_belief(
+    model,
+    frozen: dict,
+    dates,
+    y7: np.ndarray,
+    calibration_days: int,
+    const: V5ControlConstants,
+    particles: int,
+    seed: int,
+    initial_active_log_sd: float = 0.25,
+) -> BeliefCloud:
+    """Construct the 1-November posterior approximation used before 2-Nov control.
+
+    This exactly follows the V5 initialisation logic: active compartments and
+    histories are perturbed around the frozen calibration endpoint, q and rho
+    start from their calibrated values, and the 1-November real observation sets
+    the hospital discrepancy and MV conditioning variables.
+    """
+    rng = np.random.default_rng(seed)
+    c = initial_cloud(
+        np.asarray(frozen["starting_mean_x"]),
+        np.asarray(frozen["starting_case_history"]),
+        np.asarray(frozen["starting_hospital_history"]),
+        model, int(particles), float(initial_active_log_sd), rng,
+    )
+    n = particles
+    q = np.full((n, 3), model.q, dtype=float)
+    zrho = np.zeros(n, dtype=float)
+    previous_date = dates[calibration_days - 1]
+    mu0, _ = observation_means_base(
+        c.case_history, c.hospital_history, model, zrho,
+        const.hscale, const.dow, previous_date.weekday(), const.rho_mode,
+    )
+    mu0[:, :3] *= const.case_scale[None, :]
+    eH = np.log((y7[calibration_days - 1, 3:6][None, :] + 0.5) / (mu0[:, 3:6] + 0.5))
+    u_prev = c.x[:, :, U].sum(axis=1).astype(float)
+    y_mv_prev = float(y7[calibration_days - 1, 6])
+    return BeliefCloud(
+        c.x.copy(), c.case_history.copy(), c.hospital_history.copy(), q, zrho,
+        eH, u_prev, y_mv_prev, c.logw.copy(),
+    )
+
+
+def sample_truth_from_belief(belief: BeliefCloud, rng: np.random.Generator) -> TruthState:
+    w = belief.weights
+    i = int(rng.choice(belief.n, p=w))
+    zr = belief.zrho[i]
+    if np.ndim(zr) != 0:
+        raise ValueError("The validated counterfactual runner currently uses common-rho mode.")
+    return TruthState(
+        belief.x[i].copy(), belief.case_history[i].copy(), belief.hospital_history[i].copy(),
+        belief.q[i].copy(), float(zr), belief.eH[i].copy(), float(belief.u_prev[i]),
+        float(belief.y_mv_prev),
+        np.zeros(3, dtype=np.int64) if belief.deaths is None else belief.deaths[i].copy(),
+    )
+
+
+def subsample_belief(belief: BeliefCloud, n: int, rng: np.random.Generator) -> BeliefCloud:
+    """Monte-Carlo approximation to the current belief for a planning episode."""
+    w = belief.weights
+    idx = rng.choice(belief.n, size=int(n), replace=True, p=w)
+    m = len(idx)
+    return BeliefCloud(
+        belief.x[idx].copy(), belief.case_history[idx].copy(), belief.hospital_history[idx].copy(),
+        belief.q[idx].copy(), belief.zrho[idx].copy(), belief.eH[idx].copy(),
+        belief.u_prev[idx].copy(), float(belief.y_mv_prev),
+        np.full(m, -math.log(m), dtype=float),
+        None if belief.deaths is None else belief.deaths[idx].copy(),
+        None if belief.death_route_counts is None else belief.death_route_counts[idx].copy(),
+        belief.mortality_probabilities,
+    )
+
+
+def _means_for_belief(belief: BeliefCloud, model, const: V5ControlConstants, dt: date):
+    mu6, rho = observation_means_base(
+        belief.case_history, belief.hospital_history, model, belief.zrho,
+        const.hscale, const.dow, dt.weekday(), const.rho_mode,
+    )
+    mu6[:, :3] *= const.case_scale[None, :]
+    return mu6, rho
+
+
+def _means_for_truth(truth: TruthState, model, const: V5ControlConstants, dt: date):
+    z = np.asarray([truth.zrho], dtype=float)
+    mu6, rho = observation_means_base(
+        truth.case_history[None, ...], truth.hospital_history[None, ...], model, z,
+        const.hscale, const.dow, dt.weekday(), const.rho_mode,
+    )
+    mu6[:, :3] *= const.case_scale[None, :]
+    return mu6[0], rho[0]
+
+
+def simulate_truth_day(
+    truth: TruthState,
+    action: np.ndarray,
+    dt: date,
+    model,
+    const: V5ControlConstants,
+    rng_process: np.random.Generator,
+    rng_transition: np.random.Generator,
+    rng_observation: np.random.Generator,
+    household_contact: Optional[np.ndarray] = None,
+    nonhousehold_contact: Optional[np.ndarray] = None,
+    forced_q: Optional[np.ndarray] = None,
+    mortality_probs: Optional[dict] = None,
+    rng_death: Optional[np.random.Generator] = None,
+):
+    """Advance hidden truth one day and generate the seven V5 surveillance observations.
+
+    ``forced_q`` is used only for historical-q counterfactual deployment.  When it
+    is supplied, the hidden world's q for this date is fixed to that externally
+    inferred value instead of being advanced by the model random walk.  The
+    particle filter and the planning simulator remain unchanged and continue to
+    treat q as latent and stochastic, so the controller is not given oracle
+    knowledge of the future historical q path.
+
+    A q-random-walk draw is still consumed when ``forced_q`` is supplied.  This
+    keeps the remaining process RNG stream (notably rho) aligned with the
+    ordinary V6 experiment, which is useful for paired counterfactual comparisons.
+    """
+    sq, sr = const.sigma_q_day, const.sigma_rho_day
+    q_noise = rng_process.normal(-0.5 * sq * sq, sq, size=3)
+    if forced_q is None:
+        truth.q *= np.exp(q_noise)
+    else:
+        fq = np.asarray(forced_q, dtype=float)
+        if fq.shape != (3,) or np.any(~np.isfinite(fq)) or np.any(fq <= 0):
+            raise ValueError(f"forced_q must be a finite positive length-3 vector; got {forced_q!r}")
+        truth.q = fq.copy()
+    truth.zrho += float(rng_process.normal(0.0, sr))
+
+    C = action_contact_matrix(model.contact_matrix, action, household_contact, nonhousehold_contact)
+    sev, vax_cov = vaccine_severity_modifier_65plus(
+        dt, const.vax_proxy, const.vaccine_ve, const.vaccine_lag_days,
+    )
+    x0 = truth.x[None, ...]
+    q0 = truth.q[None, ...]
+    if mortality_probs is None:
+        x1, new_inf, new_hosp = _advance_controlled(x0, q0, model, rng_transition, sev, C)
+        new_deaths = np.zeros(3, dtype=np.int64)
+        mortality_routes = {key:np.zeros(3,dtype=np.int64) for key in ("I2_R","H_R","U_R")}
+        new_icu = np.zeros(3,dtype=np.int64)
+    else:
+        if rng_death is None: raise ValueError("mortality_probs requires independent rng_death")
+        x1, new_inf, new_hosp, flows = _advance_controlled(x0, q0, model, rng_transition, sev, C, return_flows=True)
+        all_deaths,mort_components=draw_route_deaths(flows,mortality_probs,rng_death,return_components=True)
+        new_deaths=all_deaths[0]
+        mortality_routes={route:val[0].astype(np.int64) for route,val in mort_components.items()}
+        new_icu=flows['H_U'][0].astype(np.int64)
+        if truth.deaths is None: truth.deaths = np.zeros(3, dtype=np.int64)
+        truth.deaths += new_deaths
+    truth.x = x1[0]
+    truth.case_history = shift_history(truth.case_history[None, ...], new_inf)[0]
+    truth.hospital_history = shift_history(truth.hospital_history[None, ...], new_hosp)[0]
+
+    mu6, rho = _means_for_truth(truth, model, const, dt)
+
+    # Cases: one common reporting-outlier indicator shared across age groups.
+    is_outlier = bool(rng_observation.random() < const.case_outlier_epsilon)
+    phi_case = const.phi6[:3] * (const.case_outlier_phi_factor if is_outlier else 1.0)
+    p = phi_case / (phi_case + mu6[:3])
+    y_cases = rng_observation.negative_binomial(phi_case, p).astype(np.int64)
+
+    # Hospital additions: V5 conditional log-AR(1) discrepancy model.
+    y_hosp = np.zeros(3, dtype=np.int64)
+    for g in range(3):
+        ml = (
+            math.log(float(mu6[3 + g]) + 0.5)
+            + const.hospital_intercept[g]
+            + const.hospital_phi[g] * truth.eH[g]
+        )
+        ly = ml + float(rng_observation.normal(0.0, const.hospital_sigma[g]))
+        y_hosp[g] = max(0, int(round(math.exp(ly) - 0.5)))
+
+    # MV: observed stock change driven by the latent total-U change.
+    u_now = float(truth.x[:, U].sum())
+    mv_mean = truth.y_mv_prev + const.pi_mv * (u_now - truth.u_prev)
+    mv_sd = const.c_mv * math.sqrt(max(truth.y_mv_prev, 1.0))
+    y_mv = max(0, int(round(float(rng_observation.normal(mv_mean, mv_sd)))))
+
+    y = np.r_[y_cases, y_hosp, y_mv].astype(np.int64)
+
+    # The generated current observations become conditioning variables tomorrow.
+    truth.eH = np.log((y_hosp.astype(float) + 0.5) / (mu6[3:6] + 0.5))
+    truth.u_prev = u_now
+    truth.y_mv_prev = float(y_mv)
+
+    metrics = {
+        "new_infections_by_age": new_inf[0].astype(int),
+        "new_hospital_by_age": new_hosp[0].astype(int),
+        "new_deaths_by_age": new_deaths.astype(int),
+        "D_by_age": (np.zeros(3, dtype=np.int64) if truth.deaths is None else truth.deaths.copy()),
+        "new_icu_by_age": new_icu,
+        "new_deaths_community_by_age": mortality_routes["I2_R"],
+        "new_deaths_ward_by_age": mortality_routes["H_R"],
+        "new_deaths_icu_by_age": mortality_routes["U_R"],
+        "U_by_age": truth.x[:, U].astype(int).copy(),
+        "U_total": int(truth.x[:, U].sum()),
+        "H_total": int(truth.x[:, H].sum()),
+        "I_total": int((truth.x[:, I1] + truth.x[:, I2]).sum()),
+        "q": truth.q.copy(),
+        "rho": rho.copy(),
+        "case_reporting_outlier": int(is_outlier),
+        "severity_multiplier_65plus": float(sev),
+        "effective_65plus_first_dose_lagged": float(vax_cov),
+        "controlled_contacts": C,
+    }
+    return y, metrics
+
+
+def filter_day(
+    belief: BeliefCloud,
+    y: np.ndarray,
+    action: np.ndarray,
+    dt: date,
+    model,
+    const: V5ControlConstants,
+    rng_process: np.random.Generator,
+    rng_transition: np.random.Generator,
+    rng_resample: np.random.Generator,
+    ess_threshold_fraction: float = 0.5,
+    household_contact: Optional[np.ndarray] = None,
+    nonhousehold_contact: Optional[np.ndarray] = None,
+):
+    """One exact V5 bootstrap-filter update under an intervention action."""
+    y = np.asarray(y, dtype=float)
+    n = belief.n
+    sq, sr = const.sigma_q_day, const.sigma_rho_day
+    belief.q *= np.exp(rng_process.normal(-0.5 * sq * sq, sq, size=(n, 3)))
+    belief.zrho += rng_process.normal(0.0, sr, size=belief.zrho.shape)
+
+    C = action_contact_matrix(model.contact_matrix, action, household_contact, nonhousehold_contact)
+    sev, _ = vaccine_severity_modifier_65plus(dt, const.vax_proxy, const.vaccine_ve, const.vaccine_lag_days)
+    belief.x, new_inf, new_hosp = _advance_controlled(
+        belief.x, belief.q, model, rng_transition, sev, C,
+    )
+    belief.case_history = shift_history(belief.case_history, new_inf)
+    belief.hospital_history = shift_history(belief.hospital_history, new_hosp)
+
+    if np.any(belief.x < 0):
+        raise RuntimeError(f"Negative state encountered on {dt}.")
+    target = np.broadcast_to(model.population, (n, 3))
+    if not np.array_equal(belief.x.sum(axis=2), target):
+        raise RuntimeError(f"Population conservation failed on {dt}.")
+
+    mu6, rho = _means_for_belief(belief, model, const, dt)
+
+    ll_cases, _, _ = case_joint_robust_loglik(
+        y[:3], mu6[:, :3], const.phi6[:3],
+        const.case_outlier_epsilon, const.case_outlier_phi_factor,
+    )
+
+    ly_h = np.log(y[3:6] + 0.5)
+    ll_h = np.zeros((n, 3), dtype=float)
+    for g in range(3):
+        ml = (
+            np.log(mu6[:, 3 + g] + 0.5)
+            + const.hospital_intercept[g]
+            + const.hospital_phi[g] * belief.eH[:, g]
+        )
+        # Same transformed-data density used by the validated V5 runner.
+        ll_h[:, g] = norm.logpdf(ly_h[g], ml, const.hospital_sigma[g]) - ly_h[g]
+
+    u_now = belief.x[:, :, U].sum(axis=1).astype(float)
+    mv_mean = belief.y_mv_prev + const.pi_mv * (u_now - belief.u_prev)
+    mv_sd = const.c_mv * math.sqrt(max(belief.y_mv_prev, 1.0))
+    ll_mv = norm.logpdf(float(y[6]), mv_mean, mv_sd)
+
+    ll_total = ll_cases + ll_h.sum(axis=1) + ll_mv
+    belief.logw, evidence = update_log_weights(belief.logw, ll_total)
+    w = belief.weights
+    ess = float(1.0 / np.sum(w * w))
+
+    # Store the current observation conditioning states before optional resampling.
+    belief.eH = np.log((y[3:6][None, :] + 0.5) / (mu6[:, 3:6] + 0.5))
+    belief.u_prev = u_now.copy()
+    belief.y_mv_prev = float(y[6])
+
+    resampled = ess < float(ess_threshold_fraction) * n
+    if resampled:
+        ix = systematic_resample(w, rng_resample)
+        belief.resample(ix)
+        w_after = belief.weights
+    else:
+        w_after = w
+
+    return {
+        "ess": ess,
+        "ess_fraction": ess / n,
+        "resampled": int(resampled),
+        "maximum_weight": float(w.max()),
+        "joint_logscore": float(evidence),
+        "rho": rho,
+        "mu6": mu6,
+        "new_infections": new_inf,
+        "new_hospital": new_hosp,
+        "weights_before_resampling": w,
+        "weights_after": w_after,
+    }
+
+
+def daily_reward(
+    truth_metrics: dict,
+    social_loss: float,
+    u_capacity_reference: float,
+    kappa_u: float,
+    kappa_overflow: float,
+    kappa_social: float,
+):
+    """Reward from the theory notes: ICU burden + overflow + social restriction."""
+    U_total = float(truth_metrics["U_total"])
+    cap = max(float(u_capacity_reference), 1.0)
+    l_u = U_total / cap
+    l_over = float(U_total > cap)
+    icu_cost = float(kappa_u) * l_u
+    overflow_cost = float(kappa_overflow) * l_over
+    social_cost = float(kappa_social) * float(social_loss)
+    reward = -(icu_cost + overflow_cost + social_cost)
+    return float(reward), {
+        "icu_burden": float(l_u),
+        "overflow": float(l_over),
+        "social_loss": float(social_loss),
+        "icu_cost": float(icu_cost),
+        "overflow_cost": float(overflow_cost),
+        "social_cost": float(social_cost),
+    }

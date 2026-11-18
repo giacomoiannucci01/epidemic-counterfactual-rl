@@ -1,0 +1,10 @@
+The stochastic epidemic structure, frozen clinical inputs, observation models,
+contact reconstructions and legacy England historical-fit implementation were
+adapted from the research project source archives supplied by the user.
+Archive-member hashes and unmodified kernel excerpts are retained in provenance/.
+
+The new unified PF-planning/DDQN orchestration, median/SD policy representation,
+country selection, packaging and tests are part of this repository.
+
+Public surveillance data and external scientific inputs retain their original
+source attribution and terms; the software licence does not relicense those data.

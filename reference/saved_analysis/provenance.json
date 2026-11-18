@@ -1,0 +1,29 @@
+{
+  "source": "User-provided saved simulation exports; these are not outputs of the new PF-planning variant",
+  "england": {
+    "source_iteration": 10,
+    "lambda": 0.8746780334510519,
+    "mortality_multiplier": 0.7494361261548264,
+    "deaths_total_model": 53968,
+    "deaths_total_display_aligned": 53296,
+    "clinical_surveillance_source": "original stochastic reporting draws"
+  },
+  "belgium": {
+    "source_iteration": 6,
+    "display_iteration": 10,
+    "lambda": 1.701171352026298,
+    "deaths_total_model": 10204,
+    "case_series": "observation means throughout; synthetic reporting draws not saved in health tail",
+    "action_display_edit": {
+      "decision": 6,
+      "source_65_plus": 0.2,
+      "displayed_65_plus": 0.7,
+      "clinical_replay_for_edit": false
+    }
+  },
+  "hashes": {
+    "belgium.csv": "806410ba080d8f8a56bce617ec4867c4a336d083bc3a3ee518b1ea8128b8f88a",
+    "belgium_displayed_actions.csv": "86f3ba81700636c60470911884ef3533e30ffe151d93959fed54c49612f7fb5a",
+    "england.csv": "9ebe4bec3d0d9a05f969d8d376d8ab70f8f73651f08e0ea9fc857444cda3a8d8"
+  }
+}

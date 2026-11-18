@@ -1,0 +1,8 @@
+* text=auto eol=lf
+# Preserve the archived input/reference bytes used by the SHA-256 manifest.
+/data/** -text
+/reference/** -text
+/examples/** -text
+/legacy/england_fit/reference/** -text
+*.png -text
+*.xlsx -text

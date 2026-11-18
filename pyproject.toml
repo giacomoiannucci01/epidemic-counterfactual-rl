@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "epidemic-counterfactual-rl"
+version = "0.1.0"
+description = "Particle-filtered epidemic counterfactual RL for England and Belgium"
+readme = "README.md"
+license = {file = "LICENSE"}
+authors = [{name = "Giacomo Iannucci"}]
+requires-python = ">=3.12"
+dependencies = ["numpy", "scipy", "pandas", "matplotlib", "torch", "Pillow"]
+
+[project.scripts]
+epidemic-rl = "epidemic_rl.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["epidemic_rl*", "legacy*"]
+
+[tool.setuptools.data-files]
+"share/epidemic-counterfactual-rl/data/england" = ["data/england/*.csv", "data/england/*.xlsx"]
+"share/epidemic-counterfactual-rl/data/belgium" = ["data/belgium/*.csv", "data/belgium/*.xlsx"]
+"share/epidemic-counterfactual-rl/reference/saved_analysis" = ["reference/saved_analysis/*.csv", "reference/saved_analysis/*.json"]
+"share/epidemic-counterfactual-rl/legacy/england_fit/reference" = ["legacy/england_fit/reference/*.csv"]
+"share/epidemic-counterfactual-rl/provenance" = ["provenance/*.json"]
+"share/epidemic-counterfactual-rl/provenance/original_kernels" = ["provenance/original_kernels/*.txt"]
+"share/epidemic-counterfactual-rl/examples" = ["examples/*.png", "examples/*.csv"]
+"share/epidemic-counterfactual-rl" = ["CITATION.cff", "CITATION.bib", "DATA_SOURCES.md", "NOTICE"]
+
