@@ -312,6 +312,7 @@ class Experiment:
             lam = following
         pd.DataFrame(self.planning_trace).to_csv(self.output/"planning_belief_states.csv", index=False)
         summary = {"country": self.engine.country, "config": asdict(self.config),
+                   "social_budget": self.engine.budget,
                    "government_reference": references, "pf_counters": self.engine.counters,
                    "planning_trace_rows_seen": self._trace_seen, "planning_trace_rows_saved": len(self.planning_trace),
                    "network_updates": self.agent.updates,

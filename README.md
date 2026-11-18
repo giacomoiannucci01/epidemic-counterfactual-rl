@@ -111,6 +111,8 @@ The control period is 12 Oct 2020–15 Jan 2021: six 14-day decisions and a fina
 
 Each run writes government and RL daily trajectories, selected actions, policy states, particle-state median/SD tables, oracle logs, the dual trace, network checkpoints, case/death/ICU-or-MV comparisons and state-uncertainty figures. Historical fitting writes one-day-ahead predictive distributions, WAPE/coverage diagnostics and state median/SD figures.
 
+Every iteration gets its own figures, including government/RL actions and remaining social budget through 15 Jan. Government lines are solid and RL lines dashed in the policy/budget comparisons, with the same colour for the same quantity. The health panel reports the cumulative normalized death/ICU loss used by the objective. Regenerate figures without training again using `python -m epidemic_rl plot-run --country england --output outputs/england/research` (or `belgium` and its run folder).
+
 ## Reproduce the previously saved analyses
 
 ```bash

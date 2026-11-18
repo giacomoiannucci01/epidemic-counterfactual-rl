@@ -186,5 +186,15 @@
     ],
     "all_packaged_hashes_match": true,
     "small_belgium_historical_run_passed": true
+  },
+  "git_transport": {
+    "all_24_archived_input_hashes_verified_in_staged_git_blobs": true,
+    "archived_input_line_endings_preserved": true
+  },
+  "iteration_figures": {
+    "both_countries_regenerated_from_completed_runs": true,
+    "actions_and_budget_end_date": "2021-01-15",
+    "cases_and_daily_deaths_end_date": "2021-01-31",
+    "period_totals_end_date": "2021-03-12"
   }
 }

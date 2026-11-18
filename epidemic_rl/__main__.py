@@ -14,7 +14,7 @@ def country_name(value):
 
 def parser():
     p=argparse.ArgumentParser(description="Particle-filtered epidemic counterfactuals: England or Belgium")
-    p.add_argument('command',choices=['check','historical-fit','run','reproduce-saved'])
+    p.add_argument('command',choices=['check','historical-fit','run','plot-run','reproduce-saved'])
     p.add_argument('--country',choices=['england','uk','belgium','be'],required=True,
                    help='uk is an alias for England data; this is not a UK-wide dataset')
     p.add_argument('--output',type=Path)
@@ -34,7 +34,10 @@ def parser():
 
 def main():
     args=parser().parse_args();country=country_name(args.country)
-    output=(args.output or Path.cwd()/'outputs'/country/args.command).resolve()
+    output=(args.output or Path.cwd()/'outputs'/country/('run' if args.command=='plot-run' else args.command)).resolve()
+    if args.command=='plot-run':
+        from .plotting import run_figures
+        print(json.dumps(run_figures(country,output),indent=2));return
     if args.command=='check':
         from .engine import Engine
         e=Engine(country)
@@ -53,8 +56,7 @@ def main():
         from .saved import reproduce
         reproduce(country,output);print('Saved-analysis figures:',output);return
     from .planning import RunConfig,Experiment
-    from .engine import Engine
-    from .plotting import counterfactual,deaths_figure,state_uncertainty
+    from .plotting import run_figures
     config=RunConfig.research() if args.profile=='research' else RunConfig()
     for arg,field in [('particles','deployment_particles'),('planning_particles','planning_particles'),
                       ('episodes','train_episodes'),('iterations','outer_iterations'),
@@ -63,21 +65,8 @@ def main():
         value=getattr(args,arg)
         if value is not None:setattr(config,field,value)
     config.oracle=not args.no_oracle
-    summary=Experiment(country,config,output).run()
-    folder=output/f'iter_{config.outer_iterations:02d}'
-    rl=pd.read_csv(folder/'rl_daily.csv')
-    e=Engine(country)
-    observed=e.observed.reset_index()
-    label='Smoke test: reduced particles and training' if config.profile=='smoke' else None
-    counterfactual(country,rl,observed,folder,run_label=label)
-    state_uncertainty(pd.read_csv(folder/'belief_states.csv'),country,folder)
-    deaths=pd.read_csv(e.data_dir/('deaths_total.csv' if country=='england' else 'deaths.csv'))
-    deaths_figure(country,rl,deaths,folder,run_label=label)
-    totals={'start_date':rl.date.min(),'end_date':rl.date.max(),
-            'rl_deaths_in_period':int(rl.deaths.sum()),
-            'rl_icu_patient_days':int(rl.icu_occupancy.sum()),
-            'observed_deaths_in_period':int(deaths.loc[deaths.date.between(rl.date.min(),rl.date.max()),'deaths_total'].sum())}
-    (folder/'period_totals.json').write_text(json.dumps(totals,indent=2))
+    Experiment(country,config,output).run()
+    totals=run_figures(country,output)
     print(json.dumps(totals,indent=2));print('Run outputs:',output)
 
 
