@@ -475,17 +475,19 @@ def shift_history(history: np.ndarray, new_value: np.ndarray) -> np.ndarray:
     return out
 
 
-def advance(x: np.ndarray, model: Model, rng=None, contacts=None):
+def advance(x: np.ndarray, model: Model, rng=None, contacts=None, *, q=None):
     """One transition; rng=None gives the deterministic mean-field map.
 
     Multinomial exits are sampled through two conditional binomials. This is
     EXACT multinomial sampling, not independent binomials from the same stock.
     New arrivals cannot move on again during this same day.
+    q optionally supplies the latent per-particle, per-age transmission intensity;
+    the archived reproduction retains its original fixed model.q by default.
     """
     pop = model.population
     infectious = x[..., I1] + model.xi * x[..., I2]
     C = model.contact_matrix if contacts is None else contacts
-    force = model.q * ((infectious / pop) @ C.T)
+    force = (model.q if q is None else q) * ((infectious / pop) @ C.T)
     p_infection = -np.expm1(-force)
     draw = (lambda n, p: n * p) if rng is None else rng.binomial
     a = draw(x[..., S], p_infection)

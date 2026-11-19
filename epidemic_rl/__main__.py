@@ -49,6 +49,7 @@ def main():
         e=Engine(country)
         manifest={'country':country,'observed_rows':len(e.observed),'observed_channels':e.obs_columns,
                   'calendar':study_calendar(),
+                  'transmission_process':e.transmission_process.manifest(),
                   'actions_calendar_rows':len(e.gov),'policy_state_features':len(e.feature_names()),
                   'statistics_in_policy_state':['median','standard deviation'],
                   'action_history_lags':3,'model_parameter_estimation_at_runtime':False}

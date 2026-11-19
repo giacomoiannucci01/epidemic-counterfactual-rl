@@ -1,5 +1,9 @@
 """Frozen England parameters. Values are literals; no parameter fitting here."""
 
+# Daily log-q innovations: original Belgium common/centered-age specification,
+# now also adopted for England. These are fixed process settings, not a new fit.
+TRANSMISSION_PROCESS = {'common_daily_sd': 0.10, 'age_daily_sd': 0.08}
+
 # Initial fit: 12 Oct--1 Nov 2020. Clinical reference risks and delay law are fixed inputs.
 INITIAL_MODEL = {'population': [31613534, 14472585, 10464019],
  'contact_matrix': [[6.5518619776902955, 1.3099309167818296, 0.4296515982895252],

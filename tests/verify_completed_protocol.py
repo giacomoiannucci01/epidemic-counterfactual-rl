@@ -18,6 +18,12 @@ def verify(folder):
     assert summary['per_decision_fits']==7*config['outer_iterations']
     assert summary['state_feature_count']==83
     assert summary['oracle_changes_posterior_uncertainty'] is False
+    process=summary['transmission_process']
+    assert process['daily_log_drift']==[0.,0.,0.]
+    assert process['common_daily_sd']==.1 and process['raw_age_daily_sd']==.08
+    expected=np.full((3,3),.01-.0064/3)
+    np.fill_diagonal(expected,.01+2*.0064/3)
+    np.testing.assert_allclose(process['daily_log_innovation_covariance'],expected,rtol=1e-14)
     assert summary['dual_update_source']=='independent closed-loop policy evaluations'
     assert summary['pf_counters']['planning']['pf_updates']>0
     assert summary['pf_counters']['evaluation']['pf_updates']==config['eval_episodes']*152*config['outer_iterations']

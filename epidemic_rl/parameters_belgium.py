@@ -1,5 +1,8 @@
 """Frozen Belgium parameters, literal fitted values; no runtime fitting."""
 
+# Original Belgium simulator's fixed daily log-q innovation settings.
+TRANSMISSION_PROCESS = {'common_daily_sd': 0.10, 'age_daily_sd': 0.08}
+
 # Original initial fit: 1--21 Sep 2020, deployed 22 Sep; source V7.
 INITIAL_MODEL = {'population': [6233349, 3084449, 2204642],
  'contact_matrix': [[9.510386222671904, 2.5046224507055665, 0.7863718719846191],

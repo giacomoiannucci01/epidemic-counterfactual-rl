@@ -1,0 +1,568 @@
+{
+  "historical_fit": {
+    "country": "england",
+    "parameters_fitted_during_run": false,
+    "particles": 5000,
+    "predictive_draws": 20000,
+    "seed": 20261114,
+    "forecast_before_current_observation_assimilation": true,
+    "initial_fit_dates": [
+      "2020-10-12",
+      "2020-11-01"
+    ],
+    "updated_fit_dates": [
+      "2020-12-01",
+      "2021-01-31"
+    ],
+    "updated_parameters_apply_from": "2020-12-06",
+    "historical_fit_profile": "Frozen England historical parameters with common/centered-age stochastic log-q, distinct from V18 RL clinical profile",
+    "transmission_process": {
+      "law": "r[t+1] = r[t] + common + centered_age_innovations",
+      "daily_log_drift": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "common_daily_sd": 0.1,
+      "raw_age_daily_sd": 0.08,
+      "age_innovations_sum_to_zero": true,
+      "daily_log_innovation_covariance": [
+        [
+          0.01426666666666667,
+          0.007866666666666668,
+          0.007866666666666668
+        ],
+        [
+          0.007866666666666668,
+          0.01426666666666667,
+          0.007866666666666668
+        ],
+        [
+          0.007866666666666668,
+          0.007866666666666668,
+          0.01426666666666667
+        ]
+      ],
+      "parameters_estimated_during_run": false,
+      "innovation_parameter_source": "Original Belgium simulator; same fixed specification adopted for England"
+    },
+    "initial_model_parameters": {
+      "population": [
+        31613534,
+        14472585,
+        10464019
+      ],
+      "contact_matrix": [
+        [
+          6.5518619776902955,
+          1.3099309167818296,
+          0.4296515982895252
+        ],
+        [
+          2.8613786393608014,
+          1.3173313374169617,
+          0.6397911121402169
+        ],
+        [
+          1.2980486188605207,
+          0.8848828784326386,
+          1.0088779541208432
+        ]
+      ],
+      "q": 0.04342198703197486,
+      "pE": 0.6666666666666666,
+      "pI": 0.5,
+      "p_hospital": [
+        0.0020433674302426205,
+        0.01727817630936254,
+        0.05549757700737431
+      ],
+      "p_icu": [
+        0.12880760548124162,
+        0.3693652809007758,
+        0.1704456670934679
+      ],
+      "p_exit_hospital": [
+        0.12668747084272525,
+        0.17579545276105535,
+        0.1523014778430458
+      ],
+      "p_exit_icu": 0.13545451491570937,
+      "rho_case": [
+        0.16228528764789812,
+        0.3396680439612737,
+        0.2703832575522013
+      ],
+      "phi_case": 20.585844287518032,
+      "phi_hospital": 8.204199907927306,
+      "delay_case": [
+        0.0002964775408880204,
+        0.006355736706534974,
+        0.019004716651602575,
+        0.033146790295592206,
+        0.04586564616868336,
+        0.05582416219125151,
+        0.06262837686640052,
+        0.06641328624277668,
+        0.06757953283806856,
+        0.066631446810263,
+        0.06408210803170755,
+        0.06040185253613878,
+        0.05599420721549253,
+        0.051188515344150365,
+        0.04624217203703207,
+        0.04134789807174466,
+        0.03664318338644257,
+        0.03222017145760314,
+        0.028135005780815958,
+        0.024416142268461782,
+        0.0210714326231638,
+        0.018093963740918984,
+        0.01546673855541325,
+        0.01316633299128045,
+        0.01116568119022976,
+        0.009436139831404455,
+        0.00794897066158562,
+        0.006676363709150368,
+        0.0325569482552025
+      ],
+      "delay_hospital": [
+        1.0
+      ],
+      "xi": 1.0
+    },
+    "updated_model_parameters": {
+      "population": [
+        31613534,
+        14472585,
+        10464019
+      ],
+      "contact_matrix": [
+        [
+          6.5518619776902955,
+          1.3099309167818296,
+          0.4296515982895252
+        ],
+        [
+          2.8613786393608014,
+          1.3173313374169617,
+          0.6397911121402169
+        ],
+        [
+          1.2980486188605207,
+          0.8848828784326386,
+          1.0088779541208432
+        ]
+      ],
+      "q": 0.08487967042895522,
+      "pE": 0.6666666666666666,
+      "pI": 0.5,
+      "p_hospital": [
+        0.0020433674302426205,
+        0.01727817630936254,
+        0.05549757700737431
+      ],
+      "p_icu": [
+        0.12880760548124162,
+        0.3693652809007758,
+        0.1704456670934679
+      ],
+      "p_exit_hospital": [
+        0.12668747084272525,
+        0.17579545276105535,
+        0.1523014778430458
+      ],
+      "p_exit_icu": 0.13545451491570937,
+      "rho_case": [
+        0.1452851209011756,
+        0.187470570468146,
+        0.15278919049904155
+      ],
+      "phi_case": 13.454836514381405,
+      "phi_hospital": 5.359363566504685,
+      "delay_case": [
+        0.0007158307500889365,
+        0.01433801098362429,
+        0.03948406428218058,
+        0.06314769946406074,
+        0.08002709351613117,
+        0.08916449914775634,
+        0.09154904187095503,
+        0.08883600154786947,
+        0.08271078166063511,
+        0.0746128157129714,
+        0.06565083568783558,
+        0.05661218900287546,
+        0.04801193556430816,
+        0.04015295761462079,
+        0.03318304277919537,
+        0.02714311340654052,
+        0.02200512390327991,
+        0.01770026229256727,
+        0.01413895978095614,
+        0.011224419055535173,
+        0.008861257921509935,
+        0.006960619608578744,
+        0.005442825416445585,
+        0.004238388427786344,
+        0.0032879888989046924,
+        0.002541837316218931,
+        0.0019587171000989834,
+        0.0015048995467137338,
+        0.004794787739755613
+      ],
+      "delay_hospital": [
+        1.0
+      ],
+      "xi": 1.0
+    },
+    "xi": 1.0,
+    "separate_transmission_multiplier": false,
+    "resampling_method": "systematic",
+    "ess_threshold_fraction": 0.5,
+    "filter_diagnostics_summary": [
+      {
+        "evaluation_window": "all_requested_dates",
+        "days": 112,
+        "ess_fraction_mean": 0.5180949017949112,
+        "ess_fraction_median": 0.5060127437807174,
+        "ess_fraction_min": 0.059491253024264425,
+        "ess_fraction_p05": 0.2047562973688133,
+        "ess_median": 2530.063718903587,
+        "ess_min": 297.45626512132213,
+        "resampled_days": 52,
+        "days_ess_below_10_percent": 2,
+        "days_ess_below_1_percent": 0,
+        "maximum_weight_max": 0.03597056206261835
+      },
+      {
+        "evaluation_window": "initial",
+        "days": 55,
+        "ess_fraction_mean": 0.5197659473874918,
+        "ess_fraction_median": 0.5032712425464668,
+        "ess_fraction_min": 0.0743734612731754,
+        "ess_fraction_p05": 0.24829940623800154,
+        "ess_median": 2516.356212732334,
+        "ess_min": 371.867306365877,
+        "resampled_days": 26,
+        "days_ess_below_10_percent": 1,
+        "days_ess_below_1_percent": 0,
+        "maximum_weight_max": 0.008754686591166497
+      },
+      {
+        "evaluation_window": "recalibrated",
+        "days": 57,
+        "ess_fraction_mean": 0.5164824893810177,
+        "ess_fraction_median": 0.5082081527193553,
+        "ess_fraction_min": 0.059491253024264425,
+        "ess_fraction_p05": 0.18338603718511073,
+        "ess_median": 2541.0407635967763,
+        "ess_min": 297.45626512132213,
+        "resampled_days": 26,
+        "days_ess_below_10_percent": 1,
+        "days_ess_below_1_percent": 0,
+        "maximum_weight_max": 0.03597056206261835
+      }
+    ],
+    "data_sha256": "d030e9b3e7d6c48700cfe5f70881752c19fabacec347a1fda29089b8dd88a2c9",
+    "source_sha256": {
+      "england_historical.py": "2517a261800074eb6f9c1269dc62e5b7b916a59fbd9496274b8ac14f5e138429",
+      "historical.py": "90bbb9efdd0cb95256ab943a3b7793e5e01a1c88f1ee24e55e0466c408eb6579",
+      "reproduce.py": "cda4998b7c9004fb3e42a3988ee841c9dacb594ae5df99916860a2fe8ee1161e",
+      "transmission.py": "8548738c88c7ee45b22b429890a70c33b71c95b1cf98b7f6226b63f20a5922f4",
+      "parameters_england.py": "67d6887affabc77e1d1c9fcd9c799d5f7c82e4123db2f7e25ffd1712cf8e9cef",
+      "engine.py": "8f25f42acfc65161652c1b2f7f39c03dadd459283a561708a97c9ccbc41c5bf4"
+    },
+    "oracle_available": false,
+    "checks": [
+      {
+        "target_date": "2020-11-02",
+        "forecast_observation_argument": false,
+        "identical_pre_observation_inputs_produce_identical_predictions": true
+      },
+      {
+        "target_date": "2020-12-06",
+        "forecast_observation_argument": false,
+        "identical_pre_observation_inputs_produce_identical_predictions": true
+      }
+    ]
+  },
+  "reproducibility": {
+    "seed": 20261114,
+    "particles": 5000,
+    "predictive_draws": 20000,
+    "independent_full_run_identical": true,
+    "files": [
+      {
+        "file": "daily_predictive_distributions.csv",
+        "sha256": "1cfd8f0d7b643616d784add486e8ac5fa73d7b0da7b9fd5137106a72ca98be3e",
+        "identical": true
+      },
+      {
+        "file": "filter_diagnostics.csv",
+        "sha256": "5843b0dff90b0ded2d4468c2d284b7f77856ae91f5c259528e4e8a8a1b3a8110",
+        "identical": true
+      },
+      {
+        "file": "fit_metrics_by_age.csv",
+        "sha256": "dfb7b29bd1c779c5eeb7bdbe7a2cdd01c5265638e19263843ee423139d215abb",
+        "identical": true
+      },
+      {
+        "file": "posterior_states.csv",
+        "sha256": "ac3ebf0ed50fec503e95d1654bb87b6c7268440f9d95b4f717fd8001519d1e87",
+        "identical": true
+      },
+      {
+        "file": "december_replay_filter_diagnostics.csv",
+        "sha256": "6ffcc30c0adba43b359fb5e50e7efbdcc58194fe8912c6c1018905fb54278a55",
+        "identical": true
+      },
+      {
+        "file": "government_contact_calendar.csv",
+        "sha256": "f5c276c2dc020ae3330185049526967fb243356eda886ec3e02d87c1f49d2ddf",
+        "identical": true
+      },
+      {
+        "file": "filter_diagnostics_summary.csv",
+        "sha256": "d38e3b61dc3fc8711f96313e3c460dc784aab42b548dbc46a7d86b19fa980cd6",
+        "identical": true
+      },
+      {
+        "file": "cases_model_fit_by_age.png",
+        "sha256": "698310adc8390d229a4e6558a2bbc23abf1dab4cc62131a6c28d590061f00021",
+        "identical": true
+      },
+      {
+        "file": "particle_filter_ess.png",
+        "sha256": "d834ebddec3de547e834c2d05816ac5e964d1707f016fdd977b0c06fcb929f1a",
+        "identical": true
+      }
+    ]
+  },
+  "fit_metrics": [
+    {
+      "evaluation_window": "all_requested_dates",
+      "age_group": "0_44",
+      "start_date": "2020-10-12",
+      "end_date": "2021-01-31",
+      "days": 112,
+      "point_forecast": "predictive_mean",
+      "wape_percent": 23.021373385755485,
+      "coverage_95_percent": 95.53571428571428,
+      "covered_days": 107,
+      "mean_interval_width": 17934.196428571417,
+      "rmse_cases_per_day": 5015.596114729718,
+      "bias_percent": 6.372798955092031
+    },
+    {
+      "evaluation_window": "all_requested_dates",
+      "age_group": "45_64",
+      "start_date": "2020-10-12",
+      "end_date": "2021-01-31",
+      "days": 112,
+      "point_forecast": "predictive_mean",
+      "wape_percent": 21.660873437710897,
+      "coverage_95_percent": 93.75,
+      "covered_days": 105,
+      "mean_interval_width": 7823.470089285707,
+      "rmse_cases_per_day": 2310.817920959042,
+      "bias_percent": -0.9876571583267306
+    },
+    {
+      "evaluation_window": "all_requested_dates",
+      "age_group": "65_plus",
+      "start_date": "2020-10-12",
+      "end_date": "2021-01-31",
+      "days": 112,
+      "point_forecast": "predictive_mean",
+      "wape_percent": 25.75980333304647,
+      "coverage_95_percent": 91.07142857142856,
+      "covered_days": 102,
+      "mean_interval_width": 3763.633258928568,
+      "rmse_cases_per_day": 1030.619221375413,
+      "bias_percent": 12.31407154925467
+    },
+    {
+      "evaluation_window": "after_initial_calibration",
+      "age_group": "0_44",
+      "start_date": "2020-11-02",
+      "end_date": "2021-01-31",
+      "days": 91,
+      "point_forecast": "predictive_mean",
+      "wape_percent": 23.99450165797868,
+      "coverage_95_percent": 95.6043956043956,
+      "covered_days": 87,
+      "mean_interval_width": 19744.96730769229,
+      "rmse_cases_per_day": 5466.2634428061465,
+      "bias_percent": 7.5647854738500415
+    },
+    {
+      "evaluation_window": "after_initial_calibration",
+      "age_group": "45_64",
+      "start_date": "2020-11-02",
+      "end_date": "2021-01-31",
+      "days": 91,
+      "point_forecast": "predictive_mean",
+      "wape_percent": 22.45232571337823,
+      "coverage_95_percent": 93.4065934065934,
+      "covered_days": 85,
+      "mean_interval_width": 8568.261263736258,
+      "rmse_cases_per_day": 2514.191233662425,
+      "bias_percent": -1.02565062254915
+    },
+    {
+      "evaluation_window": "after_initial_calibration",
+      "age_group": "65_plus",
+      "start_date": "2020-11-02",
+      "end_date": "2021-01-31",
+      "days": 91,
+      "point_forecast": "predictive_mean",
+      "wape_percent": 26.6484309907681,
+      "coverage_95_percent": 89.01098901098901,
+      "covered_days": 81,
+      "mean_interval_width": 4154.973626373622,
+      "rmse_cases_per_day": 1118.758185321274,
+      "bias_percent": 12.673437726225163
+    },
+    {
+      "evaluation_window": "initial_calibration_overlap",
+      "age_group": "0_44",
+      "start_date": "2020-10-12",
+      "end_date": "2020-11-01",
+      "days": 21,
+      "point_forecast": "predictive_mean",
+      "wape_percent": 16.46493387952648,
+      "coverage_95_percent": 95.23809523809524,
+      "covered_days": 20,
+      "mean_interval_width": 10087.522619047611,
+      "rmse_cases_per_day": 2164.7788060526004,
+      "bias_percent": -1.6581952370949058
+    },
+    {
+      "evaluation_window": "initial_calibration_overlap",
+      "age_group": "45_64",
+      "start_date": "2020-10-12",
+      "end_date": "2020-11-01",
+      "days": 21,
+      "point_forecast": "predictive_mean",
+      "wape_percent": 16.183794620562715,
+      "coverage_95_percent": 95.23809523809524,
+      "covered_days": 20,
+      "mean_interval_width": 4596.041666666664,
+      "rmse_cases_per_day": 1042.9162875774018,
+      "bias_percent": -0.7247313894833295
+    },
+    {
+      "evaluation_window": "initial_calibration_overlap",
+      "age_group": "65_plus",
+      "start_date": "2020-10-12",
+      "end_date": "2020-11-01",
+      "days": 21,
+      "point_forecast": "predictive_mean",
+      "wape_percent": 19.22335055629871,
+      "coverage_95_percent": 100.0,
+      "covered_days": 21,
+      "mean_interval_width": 2067.825,
+      "rmse_cases_per_day": 491.1745336747543,
+      "bias_percent": 9.670692148538524
+    },
+    {
+      "evaluation_window": "before_december_recalibration",
+      "age_group": "0_44",
+      "start_date": "2020-11-02",
+      "end_date": "2020-12-05",
+      "days": 34,
+      "point_forecast": "predictive_mean",
+      "wape_percent": 19.92741139618552,
+      "coverage_95_percent": 94.11764705882352,
+      "covered_days": 32,
+      "mean_interval_width": 10308.081617647053,
+      "rmse_cases_per_day": 2550.995043862578,
+      "bias_percent": 8.187056146096609
+    },
+    {
+      "evaluation_window": "before_december_recalibration",
+      "age_group": "45_64",
+      "start_date": "2020-11-02",
+      "end_date": "2020-12-05",
+      "days": 34,
+      "point_forecast": "predictive_mean",
+      "wape_percent": 22.781833387252583,
+      "coverage_95_percent": 88.23529411764706,
+      "covered_days": 30,
+      "mean_interval_width": 4886.180147058819,
+      "rmse_cases_per_day": 1349.3550315765,
+      "bias_percent": 10.52720897370223
+    },
+    {
+      "evaluation_window": "before_december_recalibration",
+      "age_group": "65_plus",
+      "start_date": "2020-11-02",
+      "end_date": "2020-12-05",
+      "days": 34,
+      "point_forecast": "predictive_mean",
+      "wape_percent": 39.63635156779068,
+      "coverage_95_percent": 76.47058823529412,
+      "covered_days": 26,
+      "mean_interval_width": 2795.36176470588,
+      "rmse_cases_per_day": 1004.703149538933,
+      "bias_percent": 34.82786448851452
+    },
+    {
+      "evaluation_window": "after_december_recalibration",
+      "age_group": "0_44",
+      "start_date": "2020-12-06",
+      "end_date": "2021-01-31",
+      "days": 57,
+      "point_forecast": "predictive_mean",
+      "wape_percent": 25.220225657843027,
+      "coverage_95_percent": 96.49122807017544,
+      "covered_days": 55,
+      "mean_interval_width": 25373.986842105245,
+      "rmse_cases_per_day": 6619.781233612821,
+      "bias_percent": 7.377247935145884
+    },
+    {
+      "evaluation_window": "after_december_recalibration",
+      "age_group": "45_64",
+      "start_date": "2020-12-06",
+      "end_date": "2021-01-31",
+      "days": 57,
+      "point_forecast": "predictive_mean",
+      "wape_percent": 22.35372127156024,
+      "coverage_95_percent": 96.49122807017544,
+      "covered_days": 55,
+      "mean_interval_width": 10764.590350877184,
+      "rmse_cases_per_day": 3000.9341582583097,
+      "bias_percent": -4.482818276630199
+    },
+    {
+      "evaluation_window": "after_december_recalibration",
+      "age_group": "65_plus",
+      "start_date": "2020-12-06",
+      "end_date": "2021-01-31",
+      "days": 57,
+      "point_forecast": "predictive_mean",
+      "wape_percent": 22.337163932469355,
+      "coverage_95_percent": 96.49122807017544,
+      "covered_days": 55,
+      "mean_interval_width": 4965.970175438592,
+      "rmse_cases_per_day": 1181.5603910718896,
+      "bias_percent": 5.319400586151549
+    }
+  ],
+  "full_research_training_rerun": false,
+  "archived_fixed_q_reproduction": "python -m legacy.england_fit.reproduce --verify-reproducibility",
+  "current_historical_fit": "python -m epidemic_rl historical-fit --country england --particles 5000 --predictive-draws 20000 --seed 20261114 --output outputs/england/common_transmission_historical",
+  "validation": {
+    "unit_tests_passed": 31,
+    "fixed_seed_full_historical_repeat_passed": true,
+    "completed_england_parallel_smoke": true,
+    "completed_belgium_smoke": true,
+    "seven_decision_training_pf_planning_evaluation_and_worker_audits_passed": true,
+    "belgium_government_rl_and_decision_states_identical_to_previous_version": true,
+    "wheel_build_and_contents_verified": true,
+    "full_research_training_rerun": false
+  }
+}

@@ -27,7 +27,7 @@ from .parallel import (atomic_pickle, digest_arrays, guard_checkpoint, ordered_m
 
 ACTIONS = np.asarray(list(product((1., .7, .4, .2), repeat=3)))
 ORIGINAL_EPISODES = (50000, 47000, 44000, 41000, 38000, 34000, 30000)
-PROTOCOL = "original_per_decision_fqi_pf_median_sd_14day_v3"
+PROTOCOL = "original_per_decision_fqi_pf_median_sd_14day_common_q_v4"
 
 
 @dataclass
@@ -397,7 +397,7 @@ class Experiment:
                       "worker_pids": {name: [] for name in ("training", "fit", "mc", "evaluation")}}
         self.counters = pickle.loads(pickle.dumps(self.engine.counters)); self.planning_trace = []
         self.code_digest = hashlib.sha256(b"".join((Path(__file__).parent/name).read_bytes() for name in
-            ("planning.py", "parallel.py", "fitted_q.py", "engine.py", f"parameters_{country}.py"))).hexdigest()
+            ("planning.py", "parallel.py", "fitted_q.py", "engine.py", "transmission.py", f"parameters_{country}.py"))).hexdigest()
         arrays = self.initial.fingerprint_arrays()
         self.digest = digest_arrays(arrays, {"config": scientific_config(config), "country": country,
             "code": self.code_digest, "inputs": hashlib.sha256((self.engine.data_dir/'pf_observations.csv').read_bytes()).hexdigest()})
@@ -591,6 +591,7 @@ class Experiment:
         pd.DataFrame(self.planning_trace).to_csv(self.output/'planning_belief_states.csv', index=False)
         summary = {"country": self.engine.country, "config": asdict(self.config), "protocol": PROTOCOL,
             "calendar": study_calendar(),
+            "transmission_process": self.engine.transmission_process.manifest(),
             "social_budget": self.engine.budget, "government_reference": references,
             "health_denominators": self.references, "pf_counters": self.counters,
             "planning_trace_rows_seen": self.stats["planning_trace_seen"], "planning_trace_rows_saved": len(self.planning_trace),

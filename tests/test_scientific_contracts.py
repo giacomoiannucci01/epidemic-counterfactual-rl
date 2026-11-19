@@ -90,9 +90,9 @@ class ScientificContracts(unittest.TestCase):
         e=Engine('england');original=e.initial_belief(16,2026);test=original.copy()
         r1=np.random.default_rng(91);r2=np.random.default_rng(91)
         q=original.logq.copy()
-        q+=r1.normal(-.5*e.q_sd**2,e.q_sd,size=q.shape)
+        e.transmission_process.advance(q,r1)
         r1.normal(0,e.rho_sd,size=original.n)
-        q=np.exp(np.clip(q,np.log(1e-7),0))
+        q=np.exp(q)
         m=e.model(START);action=np.array([.7,.4,.2]);C=e.contacts(action)
         # The archived reference accepts an extra factor; use its neutral value
         # solely for this comparison. The runtime model has no such parameter.

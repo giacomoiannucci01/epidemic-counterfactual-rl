@@ -20,6 +20,7 @@ from scipy.stats import norm
 
 from legacy.england_fit.reproduce import Model, initial_cloud, nb_logpmf, shift_history
 from .paths import ROOT
+from .transmission import TransmissionProcess
 
 AGES = ("0_44", "45_64", "65_plus")
 COMPARTMENTS = ("S", "E1", "E2", "I1", "I2", "H", "U", "R")
@@ -142,6 +143,7 @@ class Engine:
             raise ValueError("Choose england or belgium")
         self.country = country
         self.params = import_module(f"epidemic_rl.parameters_{country}")
+        self.transmission_process = TransmissionProcess(**self.params.TRANSMISSION_PROCESS)
         self.base = Model.from_dict(copy.deepcopy(self.params.INITIAL_MODEL))
         self.population = self.base.population.astype(np.int64)
         self.data_dir = ROOT / "data" / country
@@ -154,7 +156,6 @@ class Engine:
             self.case_ages = AGES
             self.obs_columns = [f"cases_{a}" for a in AGES] + [f"hospital_additions_{a}" for a in AGES] + ["mv_beds_all_ages"]
             self.budget = 30.0
-            self.q_sd = self.params.OBSERVATION_PARAMETERS["adaptive_process_selection"]["sigma_log_q_week"] / np.sqrt(7)
             self.rho_sd = self.params.OBSERVATION_PARAMETERS["adaptive_process_selection"]["sigma_logit_rho_week"] / np.sqrt(7)
             self.mapping = np.eye(3)
             self.weekday = np.ones((7, 7))
@@ -179,7 +180,7 @@ class Engine:
             self.mapping = np.asarray(self.params.OBSERVATION_MAPPING)
             self.weekday = np.asarray(self.params.WEEKDAY_FACTORS)
             self.budget = float(getattr(self.params, "GOVERNMENT_BUDGET", 61.713590902679336))
-            self.q_sd, self.rho_sd = .1, 0.
+            self.rho_sd = 0.
             self.bootstrap_contacts = pd.read_csv(self.data_dir / "bootstrap_contacts.csv", parse_dates=["date"]).set_index("date")
         mortality = self.params.MORTALITY
         self.mortality = np.array([[mortality[a][key] for a in ("0-44", "45-64", "65+")]
@@ -270,17 +271,12 @@ class Engine:
         # A point correction is valid only at its current time, not tomorrow.
         b.oracle_state = None
         model = self.model(dt)
+        self.transmission_process.advance(b.logq, rng)
         if self.country == "england":
-            b.logq += rng.normal(-.5*self.q_sd**2, self.q_sd, size=b.logq.shape)
             b.zrho += rng.normal(0, self.rho_sd, size=b.n)
-        else:
-            common = rng.normal(0, .1, (b.n, 1))
-            ages = rng.normal(0, .08, (b.n, 3)); ages -= ages.mean(axis=1, keepdims=True)
-            b.logq += common + ages
         if scenario and pd.Timestamp(dt) in self.scenario_q.index:
             b.logq[:] = np.log(self.scenario_q.loc[pd.Timestamp(dt)].to_numpy(float))
-        # Preserve the source lognormal random walk; do not silently clip its
-        # future transmission states to a new parameter-fitting bound.
+        # Do not clip the paper's Gaussian log innovations to fitting bounds.
         if not np.isfinite(b.logq).all():
             raise RuntimeError("Nonfinite transmission process")
         x = b.x
@@ -489,5 +485,9 @@ class Engine:
             raise RuntimeError("Invalid compartment values")
         if not np.array_equal(b.x.sum(axis=2), np.broadcast_to(self.population, (b.n, 3))):
             raise RuntimeError("Population conservation failed")
-        if not np.isfinite(b.logq).all() or not np.isfinite(b.logw).all():
+        # Individual impossible particles legitimately have log-weight -inf.
+        # A finite normalizing mass is required; zero mass is never reset here.
+        invalid_weights = (np.isnan(b.logw).any() or np.isposinf(b.logw).any()
+                           or not np.isfinite(b.logw).any())
+        if not np.isfinite(b.logq).all() or invalid_weights:
             raise RuntimeError("Nonfinite particle state")
