@@ -45,8 +45,7 @@ INITIAL_MODEL = {'population': [6233349, 3084449, 2204642],
                 0.0003125566224618792,
                 0.0008498565073337128],
  'delay_hospital': [1.0],
- 'xi': 1.0,
- 'transmission_scale': 1.0}
+ 'xi': 1.0}
 
 # Existing clinical/reporting fit: 3--30 Nov 2020; applied on 1 Dec, including hypothetical future planning dates. q_initial stays at the initial fit value, as in source code.
 DECEMBER_MODEL = {'population': [6233349, 3084449, 2204642],
@@ -93,8 +92,7 @@ DECEMBER_MODEL = {'population': [6233349, 3084449, 2204642],
                 0.0003125566224618792,
                 0.0008498565073337128],
  'delay_hospital': [1.0],
- 'xi': 1.0,
- 'transmission_scale': 1.0}
+ 'xi': 1.0}
 
 # Frozen EOD 21 Sep mean-field state from initial fitted model; PF then assimilates only 22 Sep--11 Oct for the initial belief.
 INITIAL_PRIOR = {'mean_x': [[5760593.091629874,

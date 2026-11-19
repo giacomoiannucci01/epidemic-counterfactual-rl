@@ -45,8 +45,7 @@ INITIAL_MODEL = {'population': [31613534, 14472585, 10464019],
                 0.006676363709150368,
                 0.0325569482552025],
  'delay_hospital': [1.0],
- 'xi': 1.0,
- 'transmission_scale': 1.0}
+ 'xi': 1.0}
 
 # End-of-day 11 Oct prior reconstructed by the same initial 12 Oct--1 Nov fit; this is retrospective.
 INITIAL_PRIOR = {'mean_x': [[29302940.23186005,
@@ -162,15 +161,10 @@ INITIAL_PRIOR = {'mean_x': [[29302940.23186005,
                         6098.061537961884]],
  'mean_hospital_history': [[116.6810794826936], [199.47628833679056], [408.2337505648998]]}
 
-# Existing V18 fit: 15 Dec 2020--31 Jan 2021, applied from 15 Dec through 31 Jan; world 0.
-LATE_CALIBRATION = {'q_weekly_multiplier': [0.9568491632862426,
-                         1.7853277432186414,
-                         0.9498450731634048,
-                         0.869468883413996,
-                         0.9326144211244214,
-                         0.8756349520422678,
-                         0.7743750527456165],
- 'hospital_weekly_multiplier': [0.8165207684021575,
+# Existing V18 clinical fit: 15 Dec 2020--31 Jan 2021, applied on those dates; world 0.
+# The paper uses only latent q_g,t in the infection force. The source's separate
+# weekly transmission multipliers are excluded; these clinical values are not refitted.
+LATE_CALIBRATION = {'hospital_weekly_multiplier': [0.8165207684021575,
                                 0.7675629377042172,
                                 0.7691280361645232,
                                 1.1243171718617857,

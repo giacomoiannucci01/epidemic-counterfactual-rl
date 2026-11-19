@@ -2,6 +2,7 @@ import ast
 from datetime import date
 from pathlib import Path
 import unittest
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -93,7 +94,10 @@ class ScientificContracts(unittest.TestCase):
         r1.normal(0,e.rho_sd,size=original.n)
         q=np.exp(np.clip(q,np.log(1e-7),0))
         m=e.model(START);action=np.array([.7,.4,.2]);C=e.contacts(action)
-        expected,_,_=scope['_advance_controlled'](original.x,q,m,r1,1.,C)
+        # The archived reference accepts an extra factor; use its neutral value
+        # solely for this comparison. The runtime model has no such parameter.
+        reference=SimpleNamespace(**m.__dict__,transmission_scale=1.)
+        expected,_,_=scope['_advance_controlled'](original.x,q,reference,r1,1.,C)
         e.predict(test,action,START,r2)
         np.testing.assert_array_equal(expected,test.x)
 

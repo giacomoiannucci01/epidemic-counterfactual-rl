@@ -204,7 +204,6 @@ class Engine:
             values["p_hospital"] = np.clip(np.array(values["p_hospital"]) * p["hospital_admission_multiplier_by_age"] * p["hospital_weekly_multiplier"][j], 1e-9, .99)
             values["p_icu"] = np.clip(np.array(values["p_icu"]) * p["icu_branch_multiplier_by_age"], 1e-9, .99)
             values["p_exit_icu"] *= p["icu_exit_multiplier"]
-            values["transmission_scale"] = p["q_weekly_multiplier"][j]
         model = Model.from_dict(values)
         self._models[dt] = model
         return model
@@ -261,6 +260,12 @@ class Engine:
             return belief.oracle_state.copy()
         return belief.subset(np.array([rng.choice(belief.n, p=belief.weights)]))
 
+    def infection_force(self, b, action, dt):
+        """Paper equation: q_g,t * sum_h C_gh,t(a_t)*(I1_h+xi*I2_h)/N_h."""
+        model = self.model(dt)
+        infectious = (b.x[:, :, I1] + model.xi*b.x[:, :, I2])/self.population
+        return np.exp(b.logq) * (infectious @ self.contacts(action, dt).T)
+
     def predict(self, b, action, dt, rng, *, scenario=False):
         # A point correction is valid only at its current time, not tomorrow.
         b.oracle_state = None
@@ -278,9 +283,8 @@ class Engine:
         # future transmission states to a new parameter-fitting bound.
         if not np.isfinite(b.logq).all():
             raise RuntimeError("Nonfinite transmission process")
-        q = np.exp(b.logq) * model.transmission_scale
         x = b.x
-        force = q * (((x[:, :, I1] + model.xi*x[:, :, I2])/self.population) @ self.contacts(action, dt).T)
+        force = self.infection_force(b, action, dt)
         a = rng.binomial(x[:, :, S], np.clip(-np.expm1(-force), 0, 1))
         eb = rng.binomial(x[:, :, E1], model.pE)
         ec = rng.binomial(x[:, :, E2], model.pE)

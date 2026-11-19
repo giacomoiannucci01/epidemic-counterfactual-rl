@@ -70,7 +70,7 @@ HOUSEHOLD_SHARE = [[0.3455218440105344, 0.3780969175674851, 0.5792172657289467],
 # Applied to the rolling filter from 12 Oct 2020 through 5 Dec 2020.
 # Previously estimated offline: q, rho_case, phi_case, phi_hospital and case-delay probabilities.
 # Case-delay gamma mean = 12.0 days; shape = 3.0; maximum lag = 28 days.
-# Population, contact matrix, clinical transitions, xi and transmission_scale are fixed reference values.
+# Population, contact matrix, clinical transitions and xi are fixed reference values.
 INITIAL_MODEL_PARAMETERS = {'population': [31613534, 14472585, 10464019],
  'contact_matrix': [[6.5518619776902955, 1.3099309167818296, 0.4296515982895252],
                     [2.8613786393608014, 1.3173313374169617, 0.6397911121402169],
@@ -115,8 +115,7 @@ INITIAL_MODEL_PARAMETERS = {'population': [31613534, 14472585, 10464019],
                 0.006676363709150368,
                 0.0325569482552025],
  'delay_hospital': [1.0],
- 'xi': 1.0,
- 'transmission_scale': 1.0}
+ 'xi': 1.0}
 
 
 
@@ -289,8 +288,7 @@ UPDATED_MODEL_PARAMETERS = {'population': [31613534, 14472585, 10464019],
                 0.0015048995467137338,
                 0.004794787739755613],
  'delay_hospital': [1.0],
- 'xi': 1.0,
- 'transmission_scale': 1.0}
+ 'xi': 1.0}
 
 
 
@@ -432,7 +430,6 @@ class Model:
     delay_case: np.ndarray
     delay_hospital: np.ndarray
     xi: float = 1.0
-    transmission_scale: float = 1.0  # V18 calendar multiplier in infection hazard; baseline 1
 
     def __post_init__(self):
         for name in ('population', 'contact_matrix', 'p_hospital', 'p_icu',
@@ -446,8 +443,6 @@ class Model:
             raise ValueError('Populations must be finite and positive.')
         if np.any(self.contact_matrix < 0) or not np.isfinite(self.contact_matrix).all():
             raise ValueError('Contacts must be finite and nonnegative.')
-        if not np.isfinite(self.transmission_scale) or self.transmission_scale <= 0:
-            raise ValueError('Positive finite transmission_scale required')
         if self.q <= 0 or not np.isfinite(self.q):
             raise ValueError('q must be a finite positive fixed constant.')
         for p in (self.pE, self.pI, self.p_hospital, self.p_icu,
