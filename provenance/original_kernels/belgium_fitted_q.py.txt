@@ -1,0 +1,186 @@
+"""Belgian V18 DDQN, independent deterministic parallel CPU ensemble fit.
+
+Same 23->128->128->64->64 Q network, bootstraps, Double DQN/FQI,
+optimiser, seeds and minibatches as the original Belgian sequential version.
+Only execution scheduling is changed: three independent members can be fitted
+concurrently, with per-member integrity-checked atomic checkpoints.
+"""
+from __future__ import annotations
+import copy, hashlib, json, os, multiprocessing as mp, time
+from dataclasses import dataclass
+from pathlib import Path
+import numpy as np
+import torch
+from torch import nn
+from torch.utils.data import DataLoader, TensorDataset
+
+@dataclass
+class Dataset:
+    states:np.ndarray
+    actions:np.ndarray
+    rewards:np.ndarray
+    next_states:np.ndarray
+    done:np.ndarray
+    next_mask:np.ndarray
+
+class QNetwork(nn.Module):
+    def __init__(self,input_dim=23,n_actions=64):
+        super().__init__()
+        self.net=nn.Sequential(nn.Linear(input_dim,128),nn.ReLU(),nn.Linear(128,128),nn.ReLU(),
+                               nn.Linear(128,64),nn.ReLU(),nn.Linear(64,n_actions))
+    def forward(self,x):return self.net(x)
+
+_FIT_CTX = None
+_VERSION = 'BE_V18_PARALLEL_FIT_EXACT_V1'
+
+
+def _dataset_hash(ds,config,seed):
+    h=hashlib.sha256(_VERSION.encode())
+    for arr in (ds.states,ds.actions,ds.rewards,ds.next_states,ds.done,ds.next_mask):
+        ar=np.ascontiguousarray(arr)
+        h.update(str(ar.shape).encode());h.update(str(ar.dtype).encode())
+        h.update(memoryview(ar).cast('B'))
+    h.update(json.dumps(dict(config=config,seed=int(seed)),sort_keys=True,default=str).encode())
+    return h.hexdigest()
+
+
+def _save_member(path,mi,digest,state,logs):
+    path.mkdir(parents=True,exist_ok=True)
+    dst=path/f'member_{mi}.pt';meta=path/f'member_{mi}.json'
+    tmp=path/f'member_{mi}.pt.partial.{os.getpid()}'
+    torch.save(state,tmp)
+    with tmp.open('rb') as f:os.fsync(f.fileno())
+    sha=hashlib.sha256(tmp.read_bytes()).hexdigest()
+    os.replace(tmp,dst)
+    obj=dict(member=int(mi),digest=digest,sha256=sha,complete=True,logs=logs,implementation=_VERSION)
+    tm=path/f'member_{mi}.json.partial.{os.getpid()}'
+    with tm.open('w') as f:
+        json.dump(obj,f,indent=2,sort_keys=True);f.flush();os.fsync(f.fileno())
+    os.replace(tm,meta)
+
+
+def _load_member(path,mi,digest):
+    dst=path/f'member_{mi}.pt';meta=path/f'member_{mi}.json'
+    if not dst.exists() and not meta.exists():return None
+    # Incomplete atomic save is not reusable; allow regeneration if missing manifest.
+    if not meta.exists():return None
+    obj=json.loads(meta.read_text())
+    if obj.get('digest')!=digest or obj.get('member')!=mi or not obj.get('complete'):
+        raise RuntimeError('Incompatible DDQN fitted-Q checkpoint for member '+str(mi))
+    if not dst.exists() or hashlib.sha256(dst.read_bytes()).hexdigest()!=obj['sha256']:
+        raise RuntimeError('Corrupt DDQN member checkpoint '+str(mi))
+    return torch.load(dst,map_location='cpu',weights_only=True),obj['logs']
+
+
+def _init_member(ctx):
+    global _FIT_CTX
+    _FIT_CTX=ctx
+    torch.set_num_threads(1)
+
+
+def _fit_one_member(mi):
+    c=_FIT_CTX;X=c['X'];XN=c['XN'];A=c['A'];D=c['D'];R=c['R'];masks=c['masks']
+    config=c['config'];seed=int(c['seed']);mi=int(mi)
+    torch.set_num_threads(1)
+    begin=time.monotonic()
+    print(f'BE PARALLEL FIT member {mi+1}/{c["members"]} START pid={os.getpid()}',flush=True)
+    online_next=torch.from_numpy(XN)
+    tensor_mask=torch.from_numpy(masks)
+    valid=np.arange(len(A))
+    torch.manual_seed(seed+1009*mi)
+    online=QNetwork();target=QNetwork();target.load_state_dict(online.state_dict())
+    rng=np.random.default_rng(seed+mi*7919)
+    boot=rng.choice(valid,size=len(A),replace=True)
+    logs=[]
+    for k in range(1,int(config['fqi_iterations'])+1):
+        online.eval();target.eval();est=[]
+        with torch.no_grad():
+            for lo in range(0,len(A),32768):
+                x=online_next[lo:lo+32768];mask=tensor_mask[lo:lo+32768]
+                idx=online(x).masked_fill(~mask,-1e12).argmax(1)
+                est.append(target(x).gather(1,idx[:,None]).squeeze(1).numpy())
+        Y=(R+(1-D)*np.concatenate(est)).astype(np.float32)
+        gen=torch.Generator();gen.manual_seed(seed+mi*100003+k)
+        loader=DataLoader(TensorDataset(torch.from_numpy(X[boot]),torch.from_numpy(A[boot]),torch.from_numpy(Y[boot])),
+                          batch_size=int(config['batch_size']),shuffle=True,generator=gen)
+        optim=torch.optim.AdamW(online.parameters(),lr=float(config['learning_rate']),weight_decay=float(config['weight_decay']))
+        online.train()
+        for _ in range(int(config['epochs_per_iteration'])):
+            for xb,ab,yb in loader:
+                pred=online(xb).gather(1,ab[:,None]).squeeze(1)
+                loss=torch.nn.functional.smooth_l1_loss(pred,yb)
+                optim.zero_grad(set_to_none=True);loss.backward()
+                nn.utils.clip_grad_norm_(online.parameters(),float(config['grad_clip_norm']))
+                optim.step()
+        if k%int(config['target_sync_every'])==0:
+            target.load_state_dict(copy.deepcopy(online.state_dict()))
+        logs.append(dict(member=mi,iteration=k))
+        if k==1 or k%6==0 or k==int(config['fqi_iterations']):
+            print(f'BE PARALLEL FIT member {mi+1}/{c["members"]} FQI {k}/{config["fqi_iterations"]} '
+                  f'elapsed={time.monotonic()-begin:.1f}s',flush=True)
+    state={key:v.detach().cpu().clone() for key,v in online.state_dict().items()}
+    if c['checkpoint_dir'] is not None:
+        _save_member(c['checkpoint_dir'],mi,c['digest'],state,logs)
+        payload=None
+    else:
+        # Avoid torch multiprocessing tensor/FD lifetime issues when returning results.
+        payload={key:v.numpy().copy() for key,v in state.items()}
+    print(f'BE PARALLEL FIT member {mi+1}/{c["members"]} FINISHED '
+          f'elapsed={time.monotonic()-begin:.1f}s',flush=True)
+    return mi,payload,logs
+
+
+def fit_ddqn(ds,config,seed,workers=1,checkpoint_dir=None):
+    """Worker-invariant FQI; checkpoints protect against interrupted long runs.
+
+    Identical arithmetic, initialisation and sampling with workers=1 or 3.
+    Independent members only are parallelised, so no nested pools.
+    """
+    members=int(config['ensemble_size'])
+    workers=int(workers)
+    if workers<1 or workers>64 or members<1:raise ValueError('Invalid ensemble or worker count')
+    if workers>1 and os.name!='posix':raise RuntimeError('CPU ensemble parallelism requires Linux fork')
+    torch.set_num_threads(1)
+    mean=ds.states.mean(0).astype(np.float32)
+    sd=np.maximum(ds.states.std(0),1e-6).astype(np.float32)
+    X=(ds.states-mean)/sd;XN=(ds.next_states-mean)/sd
+    directory=Path(checkpoint_dir) if checkpoint_dir is not None else None
+    digest=_dataset_hash(ds,config,seed) if directory is not None else None
+    results={}
+    if directory is not None:
+        for mi in range(members):
+            reused=_load_member(directory,mi,digest)
+            if reused is not None:
+                results[mi]=reused
+                print(f'BE PARALLEL FIT member {mi+1}/{members} REUSED verified checkpoint',flush=True)
+    missing=[i for i in range(members) if i not in results]
+    if missing:
+        ctx=dict(X=X,XN=XN,A=ds.actions.astype(np.int64),D=ds.done.astype(np.float32),
+                 R=ds.rewards.astype(np.float32),masks=ds.next_mask,
+                 config=config,seed=int(seed),members=members,checkpoint_dir=directory,digest=digest)
+        if min(workers,len(missing))==1:
+            _init_member(ctx)
+            generated=map(_fit_one_member,missing)
+            for mi,payload,logs in generated:
+                if directory is not None:results[mi]=_load_member(directory,mi,digest)
+                else:results[mi]=(payload,logs)
+        else:
+            # Dataset arrays are COW pages inherited via fork, not 3 independent copies.
+            with mp.get_context('fork').Pool(processes=min(workers,len(missing)),initializer=_init_member,
+                                             initargs=(ctx,)) as pool:
+                for mi,payload,logs in pool.imap_unordered(_fit_one_member,missing,chunksize=1):
+                    if directory is not None:results[mi]=_load_member(directory,mi,digest)
+                    else:results[mi]=(payload,logs)
+    if len(results)!=members:raise RuntimeError('Incomplete independent DDQN ensemble')
+    nets=[];all_logs=[]
+    for mi in range(members):
+        state,logs=results[mi]
+        net=QNetwork()
+        net.load_state_dict({key:torch.as_tensor(val) for key,val in state.items()})
+        net.eval();nets.append(net);all_logs.extend(logs)
+    return nets,{'mean':mean,'sd':sd},all_logs
+
+
+def qmean(nets,scale,state):
+    z=torch.from_numpy(((np.asarray(state,np.float32)-scale['mean'])/scale['sd'])[None,:])
+    with torch.no_grad():return np.stack([n(z).numpy()[0] for n in nets]).mean(0)

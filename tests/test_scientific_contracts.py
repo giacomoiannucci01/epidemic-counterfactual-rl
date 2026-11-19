@@ -9,11 +9,12 @@ from epidemic_rl.engine import Engine, Cloud, START, ROOT, weighted_summary, sys
 
 
 class ScientificContracts(unittest.TestCase):
-    def test_replay_uses_current_dual_price(self):
-        from epidemic_rl.planning import EnsembleDDQN
-        batch = [(None, 0, -2., None, False, -3.)]
-        np.testing.assert_array_equal(EnsembleDDQN.replay_rewards(batch, 1.), [-5.])
-        np.testing.assert_array_equal(EnsembleDDQN.replay_rewards(batch, 2.), [-8.])
+    def test_social_reward_uses_current_fixed_dual_price(self):
+        from epidemic_rl.planning import health_reward, dual_update
+        a=health_reward(2,3,5,1,(100,200),30,.5)
+        b=health_reward(2,3,5,2,(100,200),30,.5)
+        self.assertAlmostEqual(b-a,-96*5/30)
+        self.assertEqual(dual_update(.5,30,30,.4,1),(.5,.4))
 
     def test_systematic_resampling_mass_and_reproducibility(self):
         np.testing.assert_array_equal(systematic_resample([0,0,1,0],np.random.default_rng(1)),[2,2,2,2])

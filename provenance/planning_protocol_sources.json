@@ -1,0 +1,10 @@
+{
+  "england/primal_dual8_fast/fit_parallel.py": {
+    "sha256": "ed16a9baac97a20a3019aaf9b7b4c2828b707c5216194de090d4625a9af6dfa6",
+    "archive": "V18_ETA_ANNEALED.zip"
+  },
+  "belgium/PROJECT/be_ddqn/dqn.py": {
+    "sha256": "e245501bdd16c372caf29cb2ad63e700c2d46e8c5ce83d7645f235109eeb7af3",
+    "archive": "BE_V11_CODE_AND_DATA.zip"
+  }
+}

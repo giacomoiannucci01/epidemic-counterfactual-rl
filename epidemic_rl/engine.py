@@ -95,6 +95,17 @@ class Cloud:
 
 
 class Engine:
+    def __getstate__(self):
+        # Importable parameter modules are reconstructed in Windows spawn
+        # workers; transmitting a module object itself is not pickleable.
+        state = self.__dict__.copy()
+        state.pop("params")
+        return state
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+        self.params = import_module(f"epidemic_rl.parameters_{self.country}")
+
     def __init__(self, country):
         if country not in ("england", "belgium"):
             raise ValueError("Choose england or belgium")
@@ -143,7 +154,7 @@ class Engine:
         self.mortality = np.array([[mortality[a][key] for a in ("0-44", "45-64", "65+")]
                                   for key in ("p_death_given_I2_to_R", "p_death_given_H_to_R", "p_death_given_U_to_R")])
         self._models = {}
-        self.counters = {phase: {"pf_updates": 0, "oracle_resets": 0} for phase in ("planning", "deployment", "historical", "bootstrap")}
+        self.counters = {phase: {"pf_updates": 0, "oracle_resets": 0} for phase in ("planning", "deployment", "evaluation", "historical", "bootstrap")}
         initial = self.contact_loss(np.array([1., 1., 1.]))
         if abs(initial) > 1e-10:
             raise ValueError("All-one actions must cost zero")

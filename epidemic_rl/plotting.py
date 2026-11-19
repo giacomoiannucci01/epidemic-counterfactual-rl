@@ -165,7 +165,7 @@ def run_figures(country, output):
     for row in dual.itertuples(index=False):
         folder=output/f'iter_{row.iteration:02d}';rl=pd.read_csv(folder/'rl_daily.csv')
         label=f'Iteration {row.iteration} | lambda {row.lambda_used:.3f}'
-        if summary['config']['profile']=='smoke':label+=' | Smoke test: reduced particles and training'
+        if summary['config']['profile']!='research':label+=' | Smoke test: reduced particles and training'
         counterfactual(country,rl,observed,folder,run_label=label)
         state_uncertainty(pd.read_csv(folder/'belief_states.csv'),country,folder,run_label=label)
         deaths_figure(country,rl,deaths,folder,run_label=label)

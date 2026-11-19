@@ -13,5 +13,6 @@ jobs:
       - run: python -m pip install -r requirements.txt
       - run: python -m pip install --no-deps .
       - run: python -m unittest discover -s tests -v
-      - run: python -m epidemic_rl run --country england --profile smoke --output validation/england
+      - run: python -m epidemic_rl run --country england --profile parallel-smoke --output validation/england
       - run: python -m epidemic_rl run --country belgium --profile smoke --output validation/belgium
+      - run: python tests/verify_completed_protocol.py validation/england validation/belgium
