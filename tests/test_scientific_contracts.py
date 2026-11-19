@@ -57,15 +57,25 @@ class ScientificContracts(unittest.TestCase):
             np.testing.assert_array_equal(ya,yb)
             np.testing.assert_array_equal(a.x,b.x)
 
-    def test_oracle_reads_current_truth_and_logs_reset(self):
+    def test_oracle_corrects_point_and_preserves_particle_uncertainty(self):
         for country in ['england','belgium']:
             e=Engine(country);b=e.initial_belief(16,2026)
             t=e.sample_truth(b,np.random.default_rng(3))
-            b.logq[:]=np.log(1e-7)
+            b.logq[:]=np.log(1e-7)+np.linspace(-.5,.5,b.n)[:,None]
+            before=b.copy();median,sd=e.state_statistics(b)
+            features=e.features(b,[],96,0)
             corrected,triggers=e.oracle_gate(b,t,phase='planning')
             self.assertTrue(triggers)
-            np.testing.assert_array_equal(corrected.x,np.repeat(t.x,16,axis=0))
-            np.testing.assert_array_equal(e.state_statistics(corrected)[1],np.zeros(36))
+            for (name,a),(_,old) in zip(corrected.particle_arrays(),before.particle_arrays()):
+                np.testing.assert_array_equal(a,old,err_msg=name)
+            np.testing.assert_array_equal(e.state_statistics(corrected)[0],median)
+            np.testing.assert_array_equal(e.state_statistics(corrected)[1],sd)
+            np.testing.assert_array_equal(e.policy_statistics(corrected)[0],e.state_matrix(t)[0])
+            np.testing.assert_array_equal(e.policy_statistics(corrected)[1],sd)
+            self.assertTrue(np.any(sd>0))
+            after=e.features(corrected,[],96,0)
+            np.testing.assert_array_equal(after[1:72:2],features[1:72:2])
+            np.testing.assert_array_equal(after[72:],features[72:])
             self.assertEqual(e.counters['planning']['oracle_resets'],1)
 
     def test_model_transition_matches_original_kernel_exactly(self):

@@ -5,7 +5,7 @@ per-decision retraining, fitted-Q, paired MC, independent evaluation and dual
 updates. Replace full-state future features with particle-filter beliefs.
 """
 from __future__ import annotations
-from dataclasses import dataclass, asdict, fields
+from dataclasses import dataclass, asdict
 from datetime import timedelta
 from itertools import product
 import hashlib
@@ -240,7 +240,7 @@ def _context_digest(context, extra=None):
     metadata = {key: context[key] for key in ("decision", "spent", "history", "lam", "references", "seed") if key in context}
     metadata.update(config=scientific_config(context["config"]), protocol=PROTOCOL,
                     country=context["engine"].country, extra=extra, code=context["code_digest"])
-    return digest_arrays([getattr(belief, field.name) for field in fields(belief)], metadata)
+    return digest_arrays(belief.fingerprint_arrays(), metadata)
 
 
 def generate_dataset(context, episodes, workers=1, checkpoint=None, trace_limit=0):
@@ -397,7 +397,7 @@ class Experiment:
         self.counters = pickle.loads(pickle.dumps(self.engine.counters)); self.planning_trace = []
         self.code_digest = hashlib.sha256(b"".join((Path(__file__).parent/name).read_bytes() for name in
             ("planning.py", "parallel.py", "fitted_q.py", "engine.py", f"parameters_{country}.py"))).hexdigest()
-        arrays = [getattr(self.initial, field.name) for field in fields(self.initial)]
+        arrays = self.initial.fingerprint_arrays()
         self.digest = digest_arrays(arrays, {"config": scientific_config(config), "country": country,
             "code": self.code_digest, "inputs": hashlib.sha256((self.engine.data_dir/'pf_observations.csv').read_bytes()).hexdigest()})
         guard_checkpoint(self.output, self.digest)
@@ -508,6 +508,7 @@ class Experiment:
             feature = self.engine.features(belief, history, 96-elapsed, spent); action = ACTIONS[aid]
             decisions.append({"iteration": iteration, "decision": decision+1, "date": str(START+timedelta(days=elapsed)),
                 "lambda": lam, "action_id": aid, "mc_value": results[0]["row"]["mean_mc_return"],
+                "oracle_point_corrected": belief.oracle_state is not None,
                 **{name: float(value) for name, value in zip(self.engine.feature_names(), feature)},
                 **{f"a_{age}": float(value) for age, value in zip(AGES, action)}})
             reset_counters(self.engine); sim = Simulation(self.engine, self.config, role="main_deployment")
@@ -594,6 +595,8 @@ class Experiment:
             "worker_pids": self.stats["worker_pids"], "state_feature_count": len(self.engine.feature_names()),
             "feature_statistics": ["posterior_median", "posterior_standard_deviation"],
             "uses_current_simulated_truth_fallback": self.config.oracle,
+            "oracle_correction_scope": "policy point estimates only; PF particles, weights and standard deviations retained",
+            "oracle_changes_posterior_uncertainty": False,
             "uses_future_deployment_truth_in_planning": False,
             "uses_real_future_observations_in_counterfactual_filters": False,
             "new_model_parameter_fit": False, "dual_update_source": "independent closed-loop policy evaluations",

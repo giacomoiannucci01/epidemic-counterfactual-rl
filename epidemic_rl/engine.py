@@ -67,6 +67,19 @@ class Cloud:
     mv_prev: np.ndarray
     deaths: np.ndarray
     logw: np.ndarray
+    # Current-time privileged point estimate, separate from PF uncertainty.
+    # Its particle arrays hold one simulated truth; they never replace this PF.
+    oracle_state: Cloud | None = None
+
+    def particle_arrays(self):
+        return [(f.name, getattr(self, f.name)) for f in fields(self) if f.name != "oracle_state"]
+
+    def fingerprint_arrays(self):
+        arrays = [value for _, value in self.particle_arrays()]
+        arrays.append(np.array([self.oracle_state is not None], dtype=np.uint8))
+        if self.oracle_state is not None:
+            arrays.extend(value for _, value in self.oracle_state.particle_arrays())
+        return arrays
 
     @property
     def n(self):
@@ -81,17 +94,23 @@ class Cloud:
         return w / w.sum()
 
     def copy(self):
-        return Cloud(*(getattr(self, f.name).copy() for f in fields(self)))
+        result = Cloud(*(value.copy() for _, value in self.particle_arrays()))
+        if self.oracle_state is not None:
+            result.oracle_state = self.oracle_state.copy()
+        return result
 
     def subset(self, indices):
-        result = Cloud(*(getattr(self, f.name)[indices].copy() for f in fields(self)))
+        result = Cloud(*(value[indices].copy() for _, value in self.particle_arrays()))
         result.logw[:] = -math.log(result.n)
+        if self.oracle_state is not None:
+            result.oracle_state = self.oracle_state.copy()
         return result
 
     def resample(self, indices):
-        for field in fields(self):
-            setattr(self, field.name, getattr(self, field.name)[indices].copy())
+        for name, value in self.particle_arrays():
+            setattr(self, name, value[indices].copy())
         self.logw[:] = -math.log(self.n)
+        self.oracle_state = None
 
 
 class Engine:
@@ -224,9 +243,15 @@ class Engine:
         return b
 
     def sample_truth(self, belief, rng):
+        if belief.oracle_state is not None:
+            # Planning starts from the corrected known current state, while its
+            # filtering cloud retains the independently estimated uncertainty.
+            return belief.oracle_state.copy()
         return belief.subset(np.array([rng.choice(belief.n, p=belief.weights)]))
 
     def predict(self, b, action, dt, rng, *, scenario=False):
+        # A point correction is valid only at its current time, not tomorrow.
+        b.oracle_state = None
         model = self.model(dt)
         if self.country == "england":
             b.logq += rng.normal(-.5*self.q_sd**2, self.q_sd, size=b.logq.shape)
@@ -303,6 +328,7 @@ class Engine:
 
     def assimilate(self, b, y, dt, rng, phase="deployment"):
         """Weight the already propagated predictive particles, then resample."""
+        b.oracle_state = None
         y = np.asarray(y, float)
         model = self.model(dt)
         if self.country == "belgium":
@@ -333,7 +359,8 @@ class Engine:
         return {"ess_fraction": ess/b.n, "resampled": bool(resampled), "logscore": float(evidence)}
 
     def oracle_gate(self, b, truth, *, enabled=True, phase="deployment"):
-        """Existing current-truth thresholds; no future data/state is inspected."""
+        """Correct the policy point estimate; leave PF particles and SD intact."""
+        b.oracle_state = None
         if not enabled:
             return b, []
         triggers = []
@@ -354,9 +381,15 @@ class Engine:
             if abs(true[j]-med[j])/self.population[g] > .0005:
                 triggers.append(f"{age}_S")
         if triggers:
-            b = truth.subset(np.zeros(b.n, dtype=int))
+            self.correct_policy_point(b, truth)
+            # Keep the existing diagnostic counter name for output compatibility.
             self.counters[phase]["oracle_resets"] += 1
         return b, triggers
+
+    @staticmethod
+    def correct_policy_point(belief, truth):
+        belief.oracle_state = truth.copy()
+        belief.oracle_state.oracle_state = None
 
     def step_with_filter(self, truth, belief, action, dt, rng_truth, rng_pf,
                          *, phase="deployment", oracle=True, scenario=False):
@@ -369,11 +402,20 @@ class Engine:
         except RuntimeError as error:
             if not oracle or "Particle weights collapsed" not in str(error):
                 raise
-            belief = truth.subset(np.zeros(belief.n, dtype=int))
+            # Failed likelihood update: retain the predictive cloud and its
+            # uncertainty, condition observation buffers, and correct only the
+            # current policy point. No replicated-truth particle collapse.
+            self.condition_observation_states(belief, y, dt)
+            self.correct_policy_point(belief, truth)
             self.counters[phase]["oracle_resets"] += 1
-            diagnostic = {"ess_fraction": 0., "resampled": False, "logscore": None}
+            self.counters[phase]["pf_updates"] += 1
+            weights = belief.weights
+            diagnostic = {"ess_fraction": float(1/np.dot(weights, weights)/belief.n),
+                          "resampled": False, "logscore": None,
+                          "observation_update_failed": True, "oracle_point_corrected": True}
             return truth, belief, y, metrics, diagnostic, ["numeric_filter_collapse"]
         belief, triggers = self.oracle_gate(belief, truth, enabled=oracle, phase=phase)
+        diagnostic["oracle_point_corrected"] = bool(triggers)
         return truth, belief, y, metrics, diagnostic, triggers
 
     @staticmethod
@@ -387,20 +429,32 @@ class Engine:
         return states.reshape(b.n, -1)
 
     def state_statistics(self, b):
+        """Actual weighted PF posterior statistics, unaffected by the oracle."""
         return weighted_summary(self.state_matrix(b), b.weights)
+
+    def policy_statistics(self, b):
+        median, std = self.state_statistics(b)
+        if b.oracle_state is not None:
+            median = self.state_matrix(b.oracle_state)[0].copy()
+        return median, std
 
     def state_row(self, b):
         med, std = self.state_statistics(b)
-        return {f"{age}_{state}_{stat}": float(values[g*12+j])
+        row = {f"{age}_{state}_{stat}": float(values[g*12+j])
                 for g, age in enumerate(AGES) for j, state in enumerate(self.state_names())
                 for stat, values in (("median", med), ("std", std))}
+        center = med if b.oracle_state is None else self.state_matrix(b.oracle_state)[0]
+        row.update({f"{age}_{state}_policy_estimate": float(center[g*12+j])
+                    for g, age in enumerate(AGES) for j, state in enumerate(self.state_names())})
+        row["oracle_point_corrected"] = b.oracle_state is not None
+        return row
 
     def feature_names(self):
         return [f"{age}_{state}_{stat}" for age in AGES for state in self.state_names()
                 for stat in ("median", "std")] + [f"previous_action_lag{lag}_{age}" for lag in (1,2,3) for age in AGES] + ["remaining_control_fraction", "remaining_budget_fraction"]
 
     def features(self, b, action_history, remaining_days, spent):
-        med, std = self.state_statistics(b)
+        med, std = self.policy_statistics(b)
         scales = np.repeat(self.population.astype(float), 12)
         for g in range(3):
             scales[g*12+9] = self.base.q

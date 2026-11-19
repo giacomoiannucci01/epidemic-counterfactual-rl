@@ -13,6 +13,7 @@ def verify(folder):
     config=summary['config']
     assert summary['per_decision_fits']==7*config['outer_iterations']
     assert summary['state_feature_count']==83
+    assert summary['oracle_changes_posterior_uncertainty'] is False
     assert summary['dual_update_source']=='independent closed-loop policy evaluations'
     assert summary['pf_counters']['planning']['pf_updates']>0
     assert summary['pf_counters']['evaluation']['pf_updates']==config['eval_episodes']*152*config['outer_iterations']
@@ -29,6 +30,10 @@ def verify(folder):
         assert len(pd.read_csv(iteration/'rl_daily.csv'))==152
         decisions=pd.read_csv(iteration/'decisions_and_policy_state.csv')
         assert len(decisions)==7
+        assert 'oracle_point_corrected' in decisions
+        states=pd.read_csv(iteration/'belief_states.csv')
+        assert '65_plus_U_policy_estimate' in states
+        assert 'oracle_point_corrected' in states
         for decision in range(1,8):
             audit=json.loads((iteration/f'decision_{decision:02d}/timings.json').read_text())
             assert audit['training_episodes']==config['episodes_by_decision'][decision-1]
