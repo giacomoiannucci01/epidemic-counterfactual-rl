@@ -328,8 +328,15 @@ def select_mc(context, workers, trace_limit=0):
     for result in results:
         aid = result["row"]["action_id"]
         result["row"].update(ddqn_Q=float(q[aid]), ensemble_sd=float(qsd[aid]))
-    results.sort(key=lambda result: (-result["row"]["mean_mc_return"], result["row"]["action_id"]))
+    rank_mc_results(results, engine.country)
     return results[0]["row"]["action_id"], results
+
+
+def rank_mc_results(results, country):
+    # England's source sorts (-return, action_id); Belgium's max(return,
+    # action_id, sd) picks the larger action ID when returns are exactly tied.
+    sign = 1 if country == "england" else -1
+    results.sort(key=lambda result: (-result["row"]["mean_mc_return"], sign*result["row"]["action_id"]))
 
 
 _EVAL = None

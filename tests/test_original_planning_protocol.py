@@ -16,10 +16,16 @@ from torch.utils.data import DataLoader, TensorDataset
 
 from epidemic_rl.engine import Engine, ROOT
 from epidemic_rl.fitted_q import Dataset, QNetwork, fit_ddqn
-from epidemic_rl.planning import RunConfig, generate_dataset, select_mc
+from epidemic_rl.planning import RunConfig, generate_dataset, select_mc, rank_mc_results
 
 
 class OriginalPlanningProtocol(unittest.TestCase):
+    def test_country_original_mc_tie_breaking(self):
+        for country,expected in [('england',2),('belgium',7)]:
+            rows=[{'row':{'mean_mc_return':-10.,'action_id':i}} for i in [7,2]]
+            rank_mc_results(rows,country)
+            self.assertEqual(rows[0]['row']['action_id'],expected)
+
     def test_research_schedule_and_country_fitting_settings(self):
         for country in ('england','belgium'):
             cfg=RunConfig.research(country);cfg.validate()
