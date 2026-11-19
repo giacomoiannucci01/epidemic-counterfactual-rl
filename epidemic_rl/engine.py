@@ -7,7 +7,7 @@ No parameter estimation is performed in this module.
 from __future__ import annotations
 
 from dataclasses import dataclass, fields
-from datetime import date
+from datetime import date, timedelta
 from importlib import import_module
 from pathlib import Path
 import copy
@@ -24,8 +24,20 @@ from .paths import ROOT
 AGES = ("0_44", "45_64", "65_plus")
 COMPARTMENTS = ("S", "E1", "E2", "I1", "I2", "H", "U", "R")
 S, E1, E2, I1, I2, H, U, R = range(8)
-START, CONTROL_END, END = date(2020, 10, 12), date(2021, 1, 15), date(2021, 3, 12)
-DECISION_LENGTHS = (14, 14, 14, 14, 14, 14, 12)
+START, END = date(2020, 10, 12), date(2021, 3, 12)
+DECISION_LENGTHS = (14,)*7
+CONTROL_DAYS = sum(DECISION_LENGTHS)
+CONTROL_END = START + timedelta(days=CONTROL_DAYS-1)
+TAIL_START = CONTROL_END + timedelta(days=1)
+TAIL_DAYS = (END-CONTROL_END).days
+STUDY_DAYS = (END-START).days+1
+
+
+def study_calendar():
+    return {"control_start": START.isoformat(), "control_end": CONTROL_END.isoformat(),
+            "control_days": CONTROL_DAYS, "decision_lengths": list(DECISION_LENGTHS),
+            "tail_start": TAIL_START.isoformat(), "tail_days": TAIL_DAYS,
+            "study_end": END.isoformat(), "study_days": STUDY_DAYS}
 
 
 def systematic_resample(weights, rng):
@@ -462,7 +474,7 @@ class Engine:
         history = list(action_history)
         for lag in (1,2,3):
             values.extend(history[-lag] if len(history)>=lag else np.ones(3))
-        values.extend([max(remaining_days, 0)/96., (self.budget-spent)/self.budget])
+        values.extend([max(remaining_days, 0)/CONTROL_DAYS, (self.budget-spent)/self.budget])
         result = np.asarray(values, np.float32)
         if len(result) != len(self.feature_names()) or not np.isfinite(result).all():
             raise RuntimeError("Invalid median/SD policy state")

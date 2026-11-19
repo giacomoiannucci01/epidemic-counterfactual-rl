@@ -45,9 +45,10 @@ def main():
         from .plotting import run_figures
         print(json.dumps(run_figures(country,output),indent=2));return
     if args.command=='check':
-        from .engine import Engine
+        from .engine import Engine, study_calendar
         e=Engine(country)
         manifest={'country':country,'observed_rows':len(e.observed),'observed_channels':e.obs_columns,
+                  'calendar':study_calendar(),
                   'actions_calendar_rows':len(e.gov),'policy_state_features':len(e.feature_names()),
                   'statistics_in_policy_state':['median','standard deviation'],
                   'action_history_lags':3,'model_parameter_estimation_at_runtime':False}

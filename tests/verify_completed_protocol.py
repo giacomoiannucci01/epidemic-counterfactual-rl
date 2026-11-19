@@ -11,6 +11,10 @@ def verify(folder):
     folder=Path(folder)
     summary=json.loads((folder/'run_summary.json').read_text())
     config=summary['config']
+    calendar=summary['calendar']
+    assert calendar=={'control_start':'2020-10-12','control_end':'2021-01-17',
+                      'control_days':98,'decision_lengths':[14]*7,'tail_start':'2021-01-18',
+                      'tail_days':54,'study_end':'2021-03-12','study_days':152}
     assert summary['per_decision_fits']==7*config['outer_iterations']
     assert summary['state_feature_count']==83
     assert summary['oracle_changes_posterior_uncertainty'] is False
@@ -27,9 +31,22 @@ def verify(folder):
         np.testing.assert_allclose(row.expected_policy_spend,expected,rtol=0,atol=1e-12)
         np.testing.assert_allclose(row.lambda_next,np.clip(row.lambda_used+row.eta*(expected/row.budget-1),0,4),rtol=0,atol=1e-12)
         assert all(r['mc_workers_inside_evaluation']==1 for r in evals)
-        assert len(pd.read_csv(iteration/'rl_daily.csv'))==152
+        daily=pd.read_csv(iteration/'rl_daily.csv')
+        assert daily.date.tolist()==pd.date_range('2020-10-12','2021-03-12').strftime('%Y-%m-%d').tolist()
         decisions=pd.read_csv(iteration/'decisions_and_policy_state.csv')
         assert len(decisions)==7
+        assert decisions.duration_days.tolist()==[14]*7
+        assert decisions.date.tolist()==pd.date_range('2020-10-12',periods=7,freq='14D').strftime('%Y-%m-%d').tolist()
+        assert decisions.end_date.iloc[-1]=='2021-01-17'
+        assert len(daily.loc[daily.date.le('2021-01-17')])==98
+        tail=daily.loc[daily.date.ge('2021-01-18')]
+        assert len(tail)==54 and (tail.social_cost==0).all()
+        for age in ('0_44','45_64','65_plus'):
+            final=daily.loc[daily.date.between('2021-01-04','2021-01-17'),'a_'+age]
+            np.testing.assert_array_equal(final.to_numpy(),np.repeat(decisions['a_'+age].iloc[-1],14))
+        budget=pd.read_csv(iteration/'budget_and_health_loss.csv')
+        assert budget.date.max()=='2021-01-17'
+        assert len(budget.loc[budget.arm.eq('RL')])==98
         assert 'oracle_point_corrected' in decisions
         states=pd.read_csv(iteration/'belief_states.csv')
         assert '65_plus_U_policy_estimate' in states

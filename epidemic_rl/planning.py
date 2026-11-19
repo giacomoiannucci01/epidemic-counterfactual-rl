@@ -19,14 +19,15 @@ import numpy as np
 import pandas as pd
 import torch
 
-from .engine import Engine, START, CONTROL_END, END, AGES, DECISION_LENGTHS
+from .engine import (Engine, START, CONTROL_END, CONTROL_DAYS, END, TAIL_START,
+                     AGES, DECISION_LENGTHS, study_calendar)
 from .fitted_q import Dataset, FittedPolicy, QNetwork, fit_ddqn
 from .parallel import (atomic_pickle, digest_arrays, guard_checkpoint, ordered_map,
                        single_thread_worker, start_method, worker_pool)
 
 ACTIONS = np.asarray(list(product((1., .7, .4, .2), repeat=3)))
 ORIGINAL_EPISODES = (50000, 47000, 44000, 41000, 38000, 34000, 30000)
-PROTOCOL = "original_per_decision_fqi_pf_median_sd_v2"
+PROTOCOL = "original_per_decision_fqi_pf_median_sd_14day_v3"
 
 
 @dataclass
@@ -128,7 +129,7 @@ def pending_deaths(engine, truth):
 
 
 def health_reward(deaths, icu, social, lam, references, budget, alpha):
-    return -96*(alpha*deaths/references[0] + (1-alpha)*icu/references[1] + lam*social/budget)
+    return -CONTROL_DAYS*(alpha*deaths/references[0] + (1-alpha)*icu/references[1] + lam*social/budget)
 
 
 def dual_update(lam, expected_spend, budget, eta0, iteration):
@@ -179,7 +180,7 @@ class Simulation:
 
     def tail(self, truth, belief, rng_t, rng_p, phase="planning", scenario=False, collect=False):
         d = u = 0.; rows, states = [], []
-        for timestamp in pd.date_range("2021-01-16", "2021-03-12"):
+        for timestamp in pd.date_range(TAIL_START, END):
             dt = timestamp.date()
             truth, belief, dd, uu, _, r, s = self.block(truth, belief,
                 self.engine.government_action(dt), dt, 1, rng_t, rng_p, phase, scenario, collect)
@@ -213,7 +214,7 @@ def _training_episode(task):
     history, spent, rows = list(c["history"]), c["spent"], []
     for decision in range(c["decision"], 7):
         elapsed = sum(DECISION_LENGTHS[:decision])
-        state = engine.features(belief, history, 96-elapsed, spent)
+        state = engine.features(belief, history, CONTROL_DAYS-elapsed, spent)
         # Original exploration: balanced root actions in England, uniformly
         # random subsequent actions; Belgium samples uniformly at every stage.
         aid = episode % 64 if engine.country == "england" and decision == c["decision"] else int(rng_a.integers(64))
@@ -227,7 +228,7 @@ def _training_episode(task):
             d += dd+pending_deaths(engine, truth); u += uu
             successor, mask = np.zeros(len(state), np.float32), np.zeros(64, bool)
         else:
-            successor = engine.features(belief, history, 96-sum(DECISION_LENGTHS[:decision+1]), spent)
+            successor = engine.features(belief, history, CONTROL_DAYS-sum(DECISION_LENGTHS[:decision+1]), spent)
             mask = np.ones(64, bool)
         reward = health_reward(d, u, cost, c["lam"], c["references"], engine.budget, cfg.alpha)
         rows.append((state, aid, reward, successor, float(done), mask, episode, decision))
@@ -299,7 +300,7 @@ def _mc_action(task):
         for decision in range(c["decision"], 7):
             elapsed = sum(DECISION_LENGTHS[:decision])
             choice = aid if decision == c["decision"] else int(np.argmax(c["policy"].values(
-                engine.features(belief, history, 96-elapsed, spent))))
+                engine.features(belief, history, CONTROL_DAYS-elapsed, spent))))
             action = ACTIONS[choice]
             truth, belief, dd, uu, cost, _, _ = sim.block(truth, belief, action,
                 START+timedelta(days=elapsed), DECISION_LENGTHS[decision], rng_t, rng_p)
@@ -318,7 +319,7 @@ def _mc_action(task):
 def select_mc(context, workers, trace_limit=0):
     policy = FittedPolicy.from_payload(context["policy"]); engine = context["engine"]
     state = engine.features(context["belief"], context["history"],
-                            96-sum(DECISION_LENGTHS[:context["decision"]]), context["spent"])
+                            CONTROL_DAYS-sum(DECISION_LENGTHS[:context["decision"]]), context["spent"])
     q, qsd = policy.values(state, return_std=True)
     candidates = np.argsort(-q, kind="stable")[:context["config"].mc_candidates]
     days = (END-(START+timedelta(days=sum(DECISION_LENGTHS[:context["decision"]])))).days+1
@@ -505,8 +506,9 @@ class Experiment:
             for result in results:
                 self.absorb(result, "mc")
             pd.DataFrame([result["row"] for result in results]).to_csv(directory/'mc_reranking.csv', index=False)
-            feature = self.engine.features(belief, history, 96-elapsed, spent); action = ACTIONS[aid]
+            feature = self.engine.features(belief, history, CONTROL_DAYS-elapsed, spent); action = ACTIONS[aid]
             decisions.append({"iteration": iteration, "decision": decision+1, "date": str(START+timedelta(days=elapsed)),
+                "end_date": str(START+timedelta(days=elapsed+duration-1)), "duration_days": duration,
                 "lambda": lam, "action_id": aid, "mc_value": results[0]["row"]["mean_mc_return"],
                 "oracle_point_corrected": belief.oracle_state is not None,
                 **{name: float(value) for name, value in zip(self.engine.feature_names(), feature)},
@@ -588,6 +590,7 @@ class Experiment:
                   f"independent expected spend={expected:.6f}, lambda next={lam:.6f}", flush=True)
         pd.DataFrame(self.planning_trace).to_csv(self.output/'planning_belief_states.csv', index=False)
         summary = {"country": self.engine.country, "config": asdict(self.config), "protocol": PROTOCOL,
+            "calendar": study_calendar(),
             "social_budget": self.engine.budget, "government_reference": references,
             "health_denominators": self.references, "pf_counters": self.counters,
             "planning_trace_rows_seen": self.stats["planning_trace_seen"], "planning_trace_rows_saved": len(self.planning_trace),

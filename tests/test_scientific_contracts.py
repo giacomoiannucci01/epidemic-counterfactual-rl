@@ -5,7 +5,7 @@ import unittest
 
 import numpy as np
 
-from epidemic_rl.engine import Engine, Cloud, START, ROOT, weighted_summary, systematic_resample
+from epidemic_rl.engine import Engine, Cloud, START, ROOT, CONTROL_DAYS, weighted_summary, systematic_resample
 
 
 class ScientificContracts(unittest.TestCase):
@@ -13,7 +13,7 @@ class ScientificContracts(unittest.TestCase):
         from epidemic_rl.planning import health_reward, dual_update
         a=health_reward(2,3,5,1,(100,200),30,.5)
         b=health_reward(2,3,5,2,(100,200),30,.5)
-        self.assertAlmostEqual(b-a,-96*5/30)
+        self.assertAlmostEqual(b-a,-98*5/30)
         self.assertEqual(dual_update(.5,30,30,.4,1),(.5,.4))
 
     def test_systematic_resampling_mass_and_reproducibility(self):
@@ -34,7 +34,7 @@ class ScientificContracts(unittest.TestCase):
         for country in ['england','belgium']:
             with self.subTest(country=country):
                 e=Engine(country);b=e.initial_belief(24,2026)
-                names=e.feature_names();f=e.features(b,[np.array([.2,.4,.7])],96,0)
+                names=e.feature_names();f=e.features(b,[np.array([.2,.4,.7])],CONTROL_DAYS,0)
                 self.assertEqual(len(names),83);self.assertEqual(len(f),83)
                 for age in ['0_44','45_64','65_plus']:
                     for state in ['S','E1','E2','I1','I2','H','U','R','D','q']:
@@ -63,7 +63,7 @@ class ScientificContracts(unittest.TestCase):
             t=e.sample_truth(b,np.random.default_rng(3))
             b.logq[:]=np.log(1e-7)+np.linspace(-.5,.5,b.n)[:,None]
             before=b.copy();median,sd=e.state_statistics(b)
-            features=e.features(b,[],96,0)
+            features=e.features(b,[],CONTROL_DAYS,0)
             corrected,triggers=e.oracle_gate(b,t,phase='planning')
             self.assertTrue(triggers)
             for (name,a),(_,old) in zip(corrected.particle_arrays(),before.particle_arrays()):
@@ -73,7 +73,7 @@ class ScientificContracts(unittest.TestCase):
             np.testing.assert_array_equal(e.policy_statistics(corrected)[0],e.state_matrix(t)[0])
             np.testing.assert_array_equal(e.policy_statistics(corrected)[1],sd)
             self.assertTrue(np.any(sd>0))
-            after=e.features(corrected,[],96,0)
+            after=e.features(corrected,[],CONTROL_DAYS,0)
             np.testing.assert_array_equal(after[1:72:2],features[1:72:2])
             np.testing.assert_array_equal(after[72:],features[72:])
             self.assertEqual(e.counters['planning']['oracle_resets'],1)

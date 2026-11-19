@@ -110,9 +110,11 @@ def deaths_figure(country, rl, observed, output, *, display_aligned=False, name=
 
 
 def policy_figures(country, rl, government, output, summary, run_label=None):
-    """Actions and budget evolution through the end of control, 15 January."""
-    r=rl.loc[rl.date.le('2021-01-15')].copy()
-    g=government.loc[government.date.le('2021-01-15')].copy()
+    """Actions and budget evolution through this run's recorded control end."""
+    # Older saved runs predate the calendar field and ended on 15 January.
+    control_end=summary.get('calendar',{}).get('control_end','2021-01-15')
+    r=rl.loc[rl.date.le(control_end)].copy()
+    g=government.loc[government.date.le(control_end)].copy()
     ages=('0_44','45_64','65_plus')
     fig,axes=plt.subplots(3,1,figsize=(10.5,9),sharex=True)
     for age,color,ax in zip(ages,COLORS,axes):
@@ -174,5 +176,6 @@ def run_figures(country, output):
                 'rl_deaths_in_period':int(rl.deaths.sum()),
                 'rl_icu_patient_days':int(rl.icu_occupancy.sum()),
                 'observed_deaths_in_period':int(deaths.loc[deaths.date.between(rl.date.min(),rl.date.max()),'deaths_total'].sum())}
+        if 'calendar' in summary:totals['calendar']=summary['calendar']
         (folder/'period_totals.json').write_text(json.dumps(totals,indent=2))
     return totals
